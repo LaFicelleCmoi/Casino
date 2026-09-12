@@ -1,4 +1,5 @@
 import type { Card, Result } from '../src/core/index.js';
+import { DAILY_REFILL, canClaimDailyRefill, type GameKey } from './money-ledger.js';
 
 const SUIT_SYMBOLS: Readonly<Record<Card['suit'], string>> = {
   clubs: '♣',
@@ -88,4 +89,26 @@ export function queryIn<T extends Element>(root: ParentNode, selector: string): 
   const element = root.querySelector<T>(selector);
   if (element === null) throw new Error(`Élément ${selector} introuvable`);
   return element;
+}
+
+export const REFILL_DONE_MESSAGE = `Recharge du jour : +${formatChips(DAILY_REFILL)} jetons. Bonne chance !`;
+export const REFILL_USED_MESSAGE = 'Recharge du jour déjà utilisée pour ce jeu : revenez demain.';
+
+/** Libellé du bouton de recharge quotidienne, selon qu'elle reste disponible aujourd'hui. */
+export function refillLabel(game: GameKey): string {
+  return canClaimDailyRefill(game)
+    ? `Récupérer ${formatChips(DAILY_REFILL)} jetons · 1 fois par jour`
+    : 'Recharge du jour utilisée · revenez demain';
+}
+
+/** Bouton de recharge quotidienne (action REBUY), grisé une fois la recharge du jour prise. */
+export function refillButtonHtml(game: GameKey, variant = 'primary', attributes = ''): string {
+  const disabled = canClaimDailyRefill(game) ? '' : ' disabled';
+  return `<button class="btn ${variant}" data-action="REBUY"${disabled}${attributes ? ` ${attributes}` : ''}>${refillLabel(game)}</button>`;
+}
+
+/** Remet à jour un bouton de recharge déjà présent dans la page. */
+export function syncRefillButton(button: HTMLButtonElement, game: GameKey): void {
+  button.disabled = !canClaimDailyRefill(game);
+  button.textContent = refillLabel(game);
 }
