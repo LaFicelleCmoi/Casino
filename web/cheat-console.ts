@@ -27,7 +27,7 @@ const HELP = [
   'motherlode [bj|holdem]       +50 000 jetons',
   'rosebud [bj|holdem]          +1 000 jetons',
   'rayons-x                     montre les cartes cachées (croupier, adversaires)',
-  'voyance                      annonce les prochaines cartes',
+  'voyance                      annonce les prochaines cartes (les vôtres et celles du croupier)',
   'effacer                      vide la console',
   'Touche ² (ou `) pour ouvrir ou fermer, Échap pour fermer.',
 ];
