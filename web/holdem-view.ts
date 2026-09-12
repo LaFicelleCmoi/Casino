@@ -13,7 +13,8 @@ import {
   type Street,
 } from '../src/holdem/index.js';
 import { chooseBotAction } from './holdem-bot.js';
-import { DealAnimator, cardText, escapeHtml, expectOk, formatChips, queryIn } from './ui.js';
+import { loadLedger, netOf, recordResult } from './money-ledger.js';
+import { DealAnimator, cardText, escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 const HUMAN: PlayerId = playerId('vous');
 const HUMAN_SEAT = 0;
@@ -91,13 +92,18 @@ export function mountHoldem(root: HTMLElement): () => void {
   let notice = '';
   let raiseTo = 0;
   let timer: number | undefined;
+  /** Tapis du joueur avant la main en cours ; null hors main. */
+  let handStartStack: number | null = null;
 
   root.innerHTML = `
     <div class="game">
       <header class="topbar">
         <a class="back" href="#/">← Lobby</a>
         <h1>Texas Hold'em</h1>
-        <div class="bankroll">Tapis <strong data-stack></strong></div>
+        <div class="topbar-stats">
+          <div class="bankroll">Bilan <strong data-ledger></strong></div>
+          <div class="bankroll">Tapis <strong data-stack></strong></div>
+        </div>
       </header>
       <div class="holdem-layout">
         <section class="felt poker-felt">
@@ -119,12 +125,15 @@ export function mountHoldem(root: HTMLElement): () => void {
     </div>`;
 
   const stackEl = queryIn<HTMLElement>(root, '[data-stack]');
+  const ledgerEl = queryIn<HTMLElement>(root, '[data-ledger]');
   const potEl = queryIn<HTMLElement>(root, '[data-pot]');
   const boardEl = queryIn<HTMLElement>(root, '[data-board]');
   const messageEl = queryIn<HTMLElement>(root, '[data-message]');
   const seatsEl = queryIn<HTMLElement>(root, '[data-seats]');
   const logEl = queryIn<HTMLElement>(root, '[data-log]');
   const controlsEl = queryIn<HTMLElement>(root, '[data-controls]');
+
+  const humanStack = (): number => state.seats[HUMAN_SEAT]?.stack ?? 0;
 
   const nameOf = (seatIndex: SeatIndex): string =>
     state.seats[seatIndex]?.player.displayName ?? `Siège ${seatIndex + 1}`;
@@ -276,6 +285,9 @@ export function mountHoldem(root: HTMLElement): () => void {
     animator.beginFrame();
 
     stackEl.textContent = formatChips(view.seats[HUMAN_SEAT]?.stack ?? 0);
+    const net = netOf(loadLedger().holdem);
+    ledgerEl.textContent = formatSigned(net);
+    ledgerEl.className = signClass(net);
     boardEl.innerHTML = Array.from({ length: 5 }, (_, i) => {
       const card = view.board[i];
       return card === undefined ? '<div class="card-slot"></div>' : animator.card(`b${view.handNumber}-${i}`, card);
@@ -302,6 +314,7 @@ export function mountHoldem(root: HTMLElement): () => void {
   }
 
   function act(command: HoldemCommand): void {
+    const stackBefore = humanStack();
     const result = engine.apply(state, command);
     if (!result.ok) {
       notice = result.error.message;
@@ -309,6 +322,11 @@ export function mountHoldem(root: HTMLElement): () => void {
       return;
     }
     state = result.value.state;
+    if (command.type === 'START_HAND') handStartStack = state.phase !== 'WAITING' && stackBefore > 0 ? stackBefore : null;
+    if (state.phase === 'HAND_COMPLETE' && handStartStack !== null) {
+      recordResult('holdem', humanStack() - handStartStack);
+      handStartStack = null;
+    }
     notice = '';
     for (const event of result.value.events) {
       const line = describeEvent(event);
@@ -395,6 +413,8 @@ export function mountHoldem(root: HTMLElement): () => void {
 
   return () => {
     window.clearTimeout(timer);
+    // Quitter en pleine main abandonne les jetons déjà engagés.
+    if (handStartStack !== null && isHandInProgress(state)) recordResult('holdem', humanStack() - handStartStack);
     root.removeEventListener('click', onClick);
     root.removeEventListener('input', onInput);
     window.removeEventListener('keydown', onKey);
