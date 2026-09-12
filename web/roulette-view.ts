@@ -15,15 +15,24 @@ import {
   type SpinOutcome,
 } from '../src/roulette/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { SEGMENT, layoutHtml, selectionOf, wheelSvg } from './roulette-layout.js';
-import { escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  escapeHtml,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
 const PLAYER: PlayerId = playerId('vous');
 const SEAT = 0;
-const BUY_IN = DEFAULT_BALANCE;
 /** Plafonds relevés pour permettre le tapis : seule reste la limite des entiers exacts (mise × 36 sur un plein). */
 const MAX_STAKE = Math.floor(Number.MAX_SAFE_INTEGER / 36);
 const RULES: RouletteRules = { ...STANDARD_ROULETTE_RULES, maxBetPerPosition: chips(MAX_STAKE), maxTotalBet: chips(MAX_STAKE) };
@@ -75,15 +84,18 @@ export function mountRoulette(root: HTMLElement): () => void {
   const { catalog } = controller;
   const spinMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 400 : SPIN_MS;
 
+  /** Un joueur ruiné reste debout (le moteur refuse une cave nulle) : seule la recharge du jour lui est proposée. */
   function newTable(buyIn: number): RouletteState {
     const table = expectOk(controller.createTable(RULES));
+    if (buyIn === 0) return table;
     return expectOk(
       controller.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: chips(buyIn) }),
     ).state;
   }
 
-  let state = newTable(startingBalance('roulette', RULES.minBet));
-  let message = 'Faites vos jeux : choisissez un jeton, puis cliquez sur le tapis.';
+  let state = newTable(startingBalance('roulette'));
+  let message =
+    (state.seats[SEAT] ?? null) === null ? "Vous n'avez plus de jetons." : 'Faites vos jeux : choisissez un jeton, puis cliquez sur le tapis.';
   let tone: Tone = 'info';
   /** Valeur du jeton sélectionné, ou tout le solde avec le jeton All-in. */
   let chipValue: number | 'ALL_IN' = 5;
@@ -252,7 +264,7 @@ export function mountRoulette(root: HTMLElement): () => void {
   function renderControls(seat: RouletteSeat | null): string {
     const button = (action: string, label: string, enabled = true, variant = ''): string =>
       `<button class="btn ${variant}" data-action="${action}" ${enabled ? '' : 'disabled'}>${label}</button>`;
-    if (seat === null) return '';
+    if (seat === null) return refillButtonHtml('roulette');
     if (revealing) return '<p class="waiting">La bille tourne…</p>';
     if (currentResult() !== null) {
       const affordable = lastBets.length > 0 && totalOf(lastBets) <= seat.bankroll;
@@ -260,7 +272,7 @@ export function mountRoulette(root: HTMLElement): () => void {
     }
 
     const staked = totalOf(seat.bets);
-    if (seat.bankroll + staked < RULES.minBet) return button('REBUY', `Recaver ${formatChips(BUY_IN)} jetons`, true, 'primary');
+    if (seat.bankroll + staked < RULES.minBet) return refillButtonHtml('roulette');
     const rack = CHIP_VALUES.map(
       (value) =>
         `<button class="chip chip-${value} ${value === chipValue ? 'selected' : ''}" data-action="CHIP" data-value="${value}" ` +
@@ -351,12 +363,18 @@ export function mountRoulette(root: HTMLElement): () => void {
       case 'REPLAY':
         nextRound(true);
         break;
-      case 'REBUY':
-        state = newTable(BUY_IN);
-        lastBets = [];
-        [message, tone] = [`Nouvelle cave de ${formatChips(BUY_IN)} jetons. Faites vos jeux !`, 'info'];
+      case 'REBUY': {
+        const seat = seatOf();
+        if (claimDailyRefill('roulette')) {
+          state = newTable((seat === null ? 0 : seat.bankroll + totalOf(seat.bets)) + DAILY_REFILL);
+          lastBets = [];
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
+      }
     }
   }
 
@@ -382,7 +400,12 @@ export function mountRoulette(root: HTMLElement): () => void {
     getBalance: () => seatOf()?.bankroll ?? 0,
     setBalance: (_game, amount) => {
       const seat = seatOf();
-      if (seat === null) return 'Aucun joueur assis.';
+      if (seat === null) {
+        // Joueur ruiné, donc debout : le nouveau solde le rassoit.
+        state = newTable(amount);
+        render();
+        return null;
+      }
       if (revealing) return 'La bille tourne : attendez le résultat.';
       state = { ...state, seats: state.seats.map((current, index) => (index === SEAT ? { ...seat, bankroll: chips(amount) } : current)) };
       render();
