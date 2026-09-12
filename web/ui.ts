@@ -17,6 +17,17 @@ export function formatChips(amount: number): string {
   return amount.toLocaleString('fr-FR');
 }
 
+export function formatSigned(amount: number): string {
+  if (amount === 0) return '0';
+  return amount > 0 ? `+${formatChips(amount)}` : `−${formatChips(-amount)}`;
+}
+
+/** Classe de couleur pour un montant net : vert si positif, rouge si négatif. */
+export function signClass(amount: number): string {
+  if (amount === 0) return '';
+  return amount > 0 ? 'pos' : 'neg';
+}
+
 export function cardText(card: Card): string {
   return `${rankLabel(card)}${SUIT_SYMBOLS[card.suit]}`;
 }
