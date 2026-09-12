@@ -30,6 +30,10 @@ const GAME_ALIASES: Readonly<Record<string, GameKey>> = {
   courses: 'courses',
   course: 'courses',
   plinko: 'plinko',
+  mines: 'mines',
+  hilo: 'hilo',
+  'hi-lo': 'hilo',
+  pachinko: 'pachinko',
 };
 const GAME_LABELS: Readonly<Record<GameKey, string>> = {
   blackjack: 'Blackjack',
@@ -38,11 +42,14 @@ const GAME_LABELS: Readonly<Record<GameKey, string>> = {
   grattage: 'Tickets à gratter',
   courses: 'Courses hippiques',
   plinko: 'Plinko',
+  mines: 'Mines',
+  hilo: 'Hi-Lo',
+  pachinko: 'Pachinko',
 };
 
 const HELP = [
   'aide                         liste des codes',
-  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem, roulette, grattage, courses ou plinko)',
+  'argent <montant> [jeu]       fixe le solde (bj, holdem, roulette, grattage, courses, plinko, mines, hilo, pachinko)',
   'ajouter <montant> [jeu]      ajoute des jetons (négatif pour en retirer)',
   'motherlode [jeu]             +50 000 jetons',
   'rosebud [jeu]                +1 000 jetons',
@@ -51,6 +58,9 @@ const HELP = [
   'drszone / v12turbo           Pole Position Jackpot : gomme brûlée et chrono imbattable',
   'almanach                     Courses : l’arrivée du tiercé chuchotée, cheval de tête en feu',
   'gravity / newton             Plinko : billes lourdes attirées vers les ×1000 (retaper pour annuler)',
+  'minesweeper                  Mines : les bombes luisent en rouge sous les cases (retaper pour annuler)',
+  'nostradamus                  Hi-Lo : la carte suivante s’affiche en coin d’écran (retaper pour annuler)',
+  'fevertime                    Pachinko : Fever Mode immédiat, 50 billes dorées guidées vers la Platine',
   'effacer                      vide la console',
   'Touche ² (ou `) pour ouvrir ou fermer, Échap pour fermer.',
 ];
@@ -119,7 +129,7 @@ export function mountCheatConsole(): void {
     let games: readonly GameKey[] = screen.games;
     if (gameArg !== undefined) {
       const game = GAME_ALIASES[gameArg.toLowerCase()];
-      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem, roulette, grattage, courses ou plinko).`, 'error');
+      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem, roulette, grattage, courses, plinko, mines, hilo ou pachinko).`, 'error');
       if (!games.includes(game)) return print(`Le solde ${GAME_LABELS[game]} se modifie depuis le lobby ou sa table.`, 'error');
       games = [game];
     }
