@@ -14,14 +14,24 @@ import {
   type PlayerHand,
 } from '../src/blackjack/index.js';
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
-import { DealAnimator, cardText, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import {
+  DealAnimator,
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  cardText,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
 const PLAYER: PlayerId = playerId('vous');
 const SEAT = 0;
-const BUY_IN = DEFAULT_BALANCE;
 const CHIP_VALUES = [10, 25, 100, 500] as const;
 
 const TURN_ACTIONS = [
@@ -80,8 +90,10 @@ function chipsAtRisk(state: BlackjackState): number {
   return seat.hands.reduce((sum, hand) => sum + hand.bet, 0) + insurance;
 }
 
+/** Un joueur ruiné reste debout (le moteur refuse une cave nulle) : seule la recharge du jour lui est proposée. */
 function newTable(engine: BlackjackController, buyIn: number): BlackjackState {
   const table = expectOk(engine.createTable(STANDARD_BLACKJACK_RULES));
+  if (buyIn === 0) return table;
   return expectOk(
     engine.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: chips(buyIn) }),
   ).state;
@@ -113,7 +125,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
   const engine = new BlackjackController(new CryptoRandomSource());
   const animator = new DealAnimator();
   let state = newTable(engine, startingBalance('blackjack'));
-  let message = 'Posez vos jetons, puis distribuez.';
+  let message = (state.seats[SEAT] ?? null) === null ? "Vous n'avez plus de jetons." : 'Posez vos jetons, puis distribuez.';
   let tone: Tone = 'info';
 
   root.innerHTML = `
@@ -185,7 +197,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
     switch (view.phase) {
       case 'BETTING': {
         if (seat.bankroll + seat.pendingBet < view.rules.minBet) {
-          return button('REBUY', `Recaver ${formatChips(BUY_IN)} jetons`, true, 'primary');
+          return refillButtonHtml('blackjack');
         }
         const range = view.legalActions.betRange;
         const rack = CHIP_VALUES.map((value) => {
@@ -242,7 +254,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
     messageEl.dataset['tone'] = tone;
     shoeEl.textContent = `Sabot : ${view.shoe.cardsRemaining} cartes${view.shoe.reshufflePending ? ' · remélange à la prochaine manche' : ''}`;
     handsEl.innerHTML = seat === null ? '' : renderHands(view, seat);
-    controlsEl.innerHTML = seat === null ? '' : renderControls(view, seat);
+    controlsEl.innerHTML = seat === null ? refillButtonHtml('blackjack') : renderControls(view, seat);
   }
 
   function dispatch(command: BlackjackCommand): void {
@@ -270,8 +282,13 @@ export function mountBlackjack(root: HTMLElement): () => void {
     } else if (action === 'DEAL' || action === 'NEXT_ROUND') {
       dispatch({ type: action });
     } else if (action === 'REBUY') {
-      state = newTable(engine, BUY_IN);
-      [message, tone] = [`Nouvelle cave de ${formatChips(BUY_IN)} jetons. Bonne chance !`, 'info'];
+      const seat = engine.project(state, PLAYER).seats[SEAT] ?? null;
+      if (claimDailyRefill('blackjack')) {
+        state = newTable(engine, (seat === null ? 0 : seat.bankroll + seat.pendingBet) + DAILY_REFILL);
+        [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+      } else {
+        [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+      }
       render();
     } else if (isSimpleCommand(action)) {
       dispatch({ type: action, playerId: PLAYER });
@@ -349,7 +366,12 @@ export function mountBlackjack(root: HTMLElement): () => void {
     getBalance: () => state.seats[SEAT]?.bankroll ?? 0,
     setBalance: (_game, amount) => {
       const seat = state.seats[SEAT];
-      if (seat === null || seat === undefined) return 'Aucun joueur assis.';
+      if (seat === null || seat === undefined) {
+        // Joueur ruiné, donc debout : le nouveau solde le rassoit.
+        state = newTable(engine, amount);
+        render();
+        return null;
+      }
       state = { ...state, seats: state.seats.with(SEAT, { ...seat, bankroll: chips(amount) }) };
       render();
       return null;
