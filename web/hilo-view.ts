@@ -12,8 +12,17 @@ import {
   type HiloState,
 } from '../src/hilo/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
-import { expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -38,7 +47,7 @@ function cardHtml(card: HiloCard, classes = ''): string {
 
 export function mountHilo(root: HTMLElement): () => void {
   const controller = new HiloController(new CryptoRandomSource());
-  let state: HiloState = expectOk(controller.createSession(PLAYER, startingBalance('hilo', RULES.minStake)));
+  let state: HiloState = expectOk(controller.createSession(PLAYER, startingBalance('hilo')));
   let stake = 10;
   let message = 'Misez, puis devinez si la carte suivante sera plus haute ou plus basse.';
   let tone: Tone = 'info';
@@ -117,7 +126,7 @@ export function mountHilo(root: HTMLElement): () => void {
     const view = controller.project(state, PLAYER);
     const round = view.round;
     if (round === null) {
-      const rebuy = state.player.bankroll < RULES.minStake ? `<button class="btn ghost" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>` : '';
+      const rebuy = state.player.bankroll < RULES.minStake ? refillButtonHtml('hilo', 'ghost') : '';
       return `
         <label class="pk-label" for="hl-stake">Mise</label>
         <div class="pk-stake">
@@ -229,8 +238,12 @@ export function mountHilo(root: HTMLElement): () => void {
         break;
       }
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons.`, 'info'];
+        if (claimDailyRefill('hilo')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
     }
