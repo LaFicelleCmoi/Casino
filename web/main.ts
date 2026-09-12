@@ -1,11 +1,9 @@
-import { STANDARD_HOLDEM_RULES } from '../src/holdem/index.js';
 import { mountBlackjack } from './blackjack-view.js';
 import { mountCheatConsole, setCheatTarget } from './cheat-console.js';
 import { mountHoldem } from './holdem-view.js';
 import {
   loadLedger,
   netOf,
-  resetLedger,
   saveBalance,
   startingBalance,
   totalOf,
@@ -44,7 +42,6 @@ function ledgerHtml(ledger: Ledger): string {
   return `
     <div class="ledger-head">
       <h2>Votre bilan</h2>
-      <button class="btn ghost" data-action="RESET_LEDGER">Réinitialiser</button>
     </div>
     <div class="ledger-scroll">
       <table class="ledger-table">
@@ -65,9 +62,8 @@ function ledgerHtml(ledger: Ledger): string {
     </div>`;
 }
 
-/** Solde avec lequel on s'assiérait à la table (recave incluse). */
-const lobbyBalance = (game: GameKey): number =>
-  startingBalance(game, game === 'holdem' ? STANDARD_HOLDEM_RULES.bigBlind : 1);
+/** Solde avec lequel on s'assiérait à la table. */
+const lobbyBalance = (game: GameKey): number => startingBalance(game);
 
 const balanceHtml = (amount: number): string =>
   `<span class="tile-balance">Votre solde <strong>${formatChips(amount)} jetons</strong></span>`;
@@ -153,13 +149,6 @@ function lobbyHtml(): string {
 function mountLobby(root: HTMLElement): Unmount {
   root.innerHTML = lobbyHtml();
 
-  function onClick(event: MouseEvent): void {
-    if (!(event.target instanceof Element) || event.target.closest('[data-action="RESET_LEDGER"]') === null) return;
-    if (!window.confirm('Remettre à zéro le bilan et revenir à 1 000 jetons dans chaque jeu ?')) return;
-    resetLedger();
-    root.innerHTML = lobbyHtml();
-  }
-
   setCheatTarget({
     games: ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko'],
     getBalance: lobbyBalance,
@@ -171,11 +160,7 @@ function mountLobby(root: HTMLElement): Unmount {
     refresh: () => {},
   });
 
-  root.addEventListener('click', onClick);
-  return () => {
-    setCheatTarget(null);
-    root.removeEventListener('click', onClick);
-  };
+  return () => setCheatTarget(null);
 }
 
 let unmount: Unmount = () => {};
