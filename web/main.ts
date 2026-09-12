@@ -1,7 +1,18 @@
 import { STANDARD_HOLDEM_RULES } from '../src/holdem/index.js';
 import { mountBlackjack } from './blackjack-view.js';
+import { mountCheatConsole, setCheatTarget } from './cheat-console.js';
 import { mountHoldem } from './holdem-view.js';
-import { loadLedger, netOf, resetLedger, startingBalance, totalOf, type GameStats, type Ledger } from './money-ledger.js';
+import {
+  loadLedger,
+  netOf,
+  resetLedger,
+  saveBalance,
+  startingBalance,
+  totalOf,
+  type GameKey,
+  type GameStats,
+  type Ledger,
+} from './money-ledger.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -40,6 +51,10 @@ function ledgerHtml(ledger: Ledger): string {
     </div>`;
 }
 
+/** Solde avec lequel on s'assiérait à la table (recave incluse). */
+const lobbyBalance = (game: GameKey): number =>
+  startingBalance(game, game === 'holdem' ? STANDARD_HOLDEM_RULES.bigBlind : 1);
+
 const balanceHtml = (amount: number): string =>
   `<span class="tile-balance">Votre solde : <strong>${formatChips(amount)}</strong> jetons</span>`;
 
@@ -56,14 +71,14 @@ function lobbyHtml(): string {
           <span class="tile-suits" aria-hidden="true">♠ ♥</span>
           <h2>Blackjack</h2>
           <p>6 decks · croupier S17 · Blackjack 3:2 · split, double, assurance</p>
-          ${balanceHtml(startingBalance('blackjack'))}
+          ${balanceHtml(lobbyBalance('blackjack'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
         <a class="tile tile-holdem" href="#/holdem">
           <span class="tile-suits" aria-hidden="true">♣ ♦</span>
           <h2>Texas Hold'em</h2>
           <p>No-Limit 5/10 · 5 adversaires IA · side pots et départage par kickers</p>
-          ${balanceHtml(startingBalance('holdem', STANDARD_HOLDEM_RULES.bigBlind))}
+          ${balanceHtml(lobbyBalance('holdem'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
       </div>
@@ -82,8 +97,22 @@ function mountLobby(root: HTMLElement): Unmount {
     root.innerHTML = lobbyHtml();
   }
 
+  setCheatTarget({
+    games: ['blackjack', 'holdem'],
+    getBalance: lobbyBalance,
+    setBalance: (game, amount) => {
+      saveBalance(game, amount);
+      root.innerHTML = lobbyHtml();
+      return null;
+    },
+    refresh: () => {},
+  });
+
   root.addEventListener('click', onClick);
-  return () => root.removeEventListener('click', onClick);
+  return () => {
+    setCheatTarget(null);
+    root.removeEventListener('click', onClick);
+  };
 }
 
 let unmount: Unmount = () => {};
@@ -114,4 +143,5 @@ window.addEventListener('pageshow', (event) => {
   if (event.persisted) route();
 });
 window.addEventListener('hashchange', route);
+mountCheatConsole();
 route();
