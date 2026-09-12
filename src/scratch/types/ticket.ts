@@ -33,6 +33,8 @@ export interface CellGroup {
   readonly id: string;
   readonly label: string;
   readonly columns: number;
+  /** Imprimé à découvert (sommes des alignements du Morpion, mots du Jeu 3 du Méga…) : rien à gratter. */
+  readonly printed: boolean;
   readonly cells: readonly ScratchCell[];
 }
 
