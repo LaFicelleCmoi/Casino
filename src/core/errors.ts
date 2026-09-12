@@ -15,6 +15,7 @@ export const ENGINE_ERROR_CODES = [
   'INVALID_AMOUNT',
   'INSUFFICIENT_FUNDS',
   'BET_OUT_OF_LIMITS',
+  'INVALID_BET', // position absente du tapis (ex : cheval entre deux numéros non adjacents)
   'NOT_ENOUGH_PLAYERS',
   'SHOE_EXHAUSTED',
   'INVALID_CARD',
