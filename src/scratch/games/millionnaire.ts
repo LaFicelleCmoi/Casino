@@ -1,143 +1,165 @@
 import { chips, shuffle, type RandomSource } from '../../core/index.js';
-import { prizeTable } from '../prizes.js';
-import type { ScratchGameDefinition, ScratchZone, ZoneResult } from '../types/ticket.js';
+import { lotTable } from '../prizes.js';
+import type { ScratchGameDefinition, ScratchZone } from '../types/ticket.js';
 import {
   amountCell,
   bySymbol,
-  firstCell,
+  cellsOf,
+  chooseDecomposition,
+  decoyAmount,
+  firstTwo,
   group,
   groupById,
+  partsFor,
   pick,
+  randomInt,
   range,
   sample,
-  sampleWithCap,
   ticketEvaluation,
   zone,
   zoneById,
   zoneResult,
   type CellData,
+  type PrizeSlot,
 } from './helpers.js';
 
-const NUMBER_AMOUNTS = [10, 20, 50, 100, 500, 1_000, 10_000];
-const SYMBOL_AMOUNTS = [10, 20, 50, 100, 500];
-const CHEST_AMOUNTS = [10, 50, 1_000, 10_000];
-export const MILLION = 1_000_000;
-
-const SYMBOLS = [
-  ['DIAMANT', '💎'],
+const AMOUNTS = [10, 20, 50, 100, 150, 1_000, 10_000, 100_000, 1_000_000];
+const SLOTS: readonly PrizeSlot[] = [
+  { id: 'roue', capacity: 6, amounts: AMOUNTS },
+  { id: 'lingots', capacity: 1, amounts: AMOUNTS },
+  { id: 'pierres', capacity: 3, amounts: AMOUNTS },
+  { id: 'pieces', capacity: 6, amounts: AMOUNTS },
+];
+const WHEEL_SYMBOLS = [
   ['COURONNE', '👑'],
-  ['LINGOT', '💰'],
+  ['TREFLE', '🍀'],
+  ['ETOILE', '⭐'],
+  ['CLOCHE', '🔔'],
+  ['DIAMANT', '💎'],
+  ['CERISE', '🍒'],
+] as const;
+const COIN_SYMBOLS = [
+  ['PIECE', '🪙'],
   ['ETOILE', '⭐'],
   ['TREFLE', '🍀'],
-  ['HAUT_DE_FORME', '🎩'],
 ] as const;
+const BAG = 'SAC';
 
-const ZONE_IDS = ['numeros', 'symboles', 'coffre', 'million'] as const;
-type MillionnaireZone = (typeof ZONE_IDS)[number];
-const PAYABLE: Readonly<Record<MillionnaireZone, readonly number[]>> = {
-  numeros: NUMBER_AMOUNTS,
-  symboles: SYMBOL_AMOUNTS,
-  coffre: CHEST_AMOUNTS,
-  million: [MILLION],
-};
+/** Jeu 1 : 6 segments de 3 étoiles ; deux symboles identiques dans un segment gagnent son GAIN. */
+function wheelZone(rng: RandomSource, wins: readonly number[]): ScratchZone {
+  const winners = sample(rng, range(0, 5), wins.length);
+  const groups = range(0, 5).map((index) => {
+    const win = wins[winners.indexOf(index)];
+    let symbols: (typeof WHEEL_SYMBOLS)[number][];
+    if (win !== undefined) {
+      const [pair, single] = firstTwo(sample(rng, WHEEL_SYMBOLS, 2));
+      symbols = shuffle([pair, pair, single], rng);
+    } else {
+      symbols = sample(rng, WHEEL_SYMBOLS, 3);
+    }
+    return group('roue', `segment-${index + 1}`, `Segment ${index + 1}`, 4, [
+      ...symbols.map(([symbol, label]) => ({ symbol, label })),
+      amountCell(win ?? decoyAmount(rng, AMOUNTS)),
+    ]);
+  });
+  return zone('roue', 'Jeu 1 · La roue', 'Dans un même segment, deux symboles identiques : vous remportez le GAIN de ce segment.', groups);
+}
 
-function numbersZone(rng: RandomSource, win: number): ScratchZone {
-  const winning = sample(rng, range(1, 30), 2);
-  const yours: CellData[] = sample(rng, range(1, 30).filter((n) => !winning.includes(n)), win > 0 ? 5 : 6).map((n) => ({
-    symbol: 'NUMBER',
-    label: String(n),
-    value: n,
-    amount: pick(rng, NUMBER_AMOUNTS),
-  }));
-  if (win > 0) {
-    const n = pick(rng, winning);
-    yours.push({ symbol: 'NUMBER', label: String(n), value: n, amount: win });
-  }
-  return zone('numeros', 'Jeu 1 · Les numéros', 'Un de vos numéros est un numéro gagnant : vous gagnez le montant indiqué.', [
-    group('numeros', 'gagnants', 'Numéros gagnants', 2, winning.map((n) => ({ symbol: 'WINNING_NUMBER', label: String(n), value: n }))),
-    group('numeros', 'vos-numeros', 'Vos numéros', 3, shuffle(yours, rng)),
+/** Jeu 2 : 8 lingots ; deux sommes identiques gagnent cette somme. */
+function barsZone(rng: RandomSource, win: number | undefined): ScratchZone {
+  const amounts =
+    win !== undefined ? shuffle([win, win, ...sample(rng, AMOUNTS.filter((amount) => amount !== win), 6)], rng) : sample(rng, AMOUNTS, 8);
+  return zone('lingots', 'Jeu 2 · Les lingots', 'Deux sommes identiques sous les lingots : vous remportez cette somme.', [
+    group('lingots', 'lingots', 'Les 8 lingots', 4, amounts.map(amountCell)),
   ]);
 }
 
-function symbolsZone(rng: RandomSource, win: number): ScratchZone {
-  let symbols: (typeof SYMBOLS)[number][];
-  if (win > 0) {
-    const triple = pick(rng, SYMBOLS);
-    symbols = shuffle([triple, triple, triple, ...sampleWithCap(rng, SYMBOLS.filter((s) => s !== triple), 2, 3)], rng);
-  } else {
-    symbols = sampleWithCap(rng, SYMBOLS, 2, 6);
-  }
-  return zone('symboles', 'Jeu 2 · Trois symboles', 'Trois symboles identiques : vous gagnez le montant de la case Gain.', [
-    group('symboles', 'symboles', 'Grattez les symboles', 3, symbols.map(([symbol, label]) => ({ symbol, label }))),
-    group('symboles', 'gain', 'Gain', 1, [amountCell(win > 0 ? win : pick(rng, SYMBOL_AMOUNTS))]),
-  ]);
+/** Jeu 3 : 3 duels ; un diamant plus lourd que le saphir gagne le GAIN de la ligne. */
+function stonesZone(rng: RandomSource, wins: readonly number[]): ScratchZone {
+  const winners = sample(rng, range(0, 2), wins.length);
+  const groups = range(0, 2).map((index) => {
+    const win = wins[winners.indexOf(index)];
+    const heavier = randomInt(rng, 2, 30);
+    const lighter = randomInt(rng, 1, heavier - 1);
+    const [diamond, sapphire] = win !== undefined ? [heavier, lighter] : [lighter, heavier];
+    return group('pierres', `duel-${index + 1}`, `Ligne ${index + 1}`, 3, [
+      { symbol: 'DIAMANT', label: `💎 ${diamond} g`, value: diamond },
+      { symbol: 'SAPHIR', label: `🔷 ${sapphire} g`, value: sapphire },
+      amountCell(win ?? decoyAmount(rng, AMOUNTS)),
+    ]);
+  });
+  return zone('pierres', 'Jeu 3 · Diamant contre saphir', 'Sur une ligne, le diamant pèse plus lourd que le saphir : vous remportez le GAIN de la ligne.', groups);
 }
 
-function chestZone(win: number): ScratchZone {
-  return zone('coffre', 'Jeu 3 · Le coffre', 'Le coffre renferme un montant : il est à vous.', [
-    group('coffre', 'coffre', 'Ouvrez le coffre', 1, [win > 0 ? amountCell(win) : { symbol: 'EMPTY', label: 'Vide' }]),
-  ]);
+/** Jeu 4 : 6 pièces ; chaque sac découvert gagne la somme associée. */
+function coinsZone(rng: RandomSource, wins: readonly number[]): ScratchZone {
+  const winners = sample(rng, range(0, 5), wins.length);
+  const coins = range(0, 5).map((index): CellData => {
+    const win = wins[winners.indexOf(index)];
+    if (win !== undefined) return { symbol: BAG, label: '💰', amount: win };
+    const [symbol, label] = pick(rng, COIN_SYMBOLS);
+    return { symbol, label, amount: decoyAmount(rng, AMOUNTS) };
+  });
+  return zone('pieces', 'Jeu 4 · Les pièces', 'Sous une pièce, un sac : vous remportez la somme associée à ce sac.', [group('pieces', 'pieces', 'Les 6 pièces', 3, coins)]);
 }
 
-function millionZone(rng: RandomSource, win: number): ScratchZone {
-  const keys = win > 0 ? 3 : rng.nextInt(3);
-  const cells = shuffle(
-    Array.from({ length: 3 }, (_, i): CellData => (i < keys ? { symbol: 'CLE', label: '🔑' } : { symbol: 'CHAINE', label: '⛓️' })),
-    rng,
-  );
-  return zone('million', 'Jeu 4 · Le Million', 'Trois clés : vous remportez 1 000 000 jetons.', [
-    group('million', 'cles', 'Les trois serrures', 3, cells),
-  ]);
-}
-
-/** Quatre jeux indépendants sur un même ticket ; le lot est imprimé dans un seul d'entre eux. */
+/** Millionnaire, d'après le règlement FDJ : 4 jeux indépendants dont les gains se cumulent. */
 export const MILLIONNAIRE: ScratchGameDefinition = {
   type: 'MILLIONNAIRE',
   name: 'Millionnaire',
-  tagline: '4 jeux sur un même ticket · jusqu’à 1 000 000 de jetons',
+  tagline: '4 jeux : la roue, les lingots, diamant contre saphir, les pièces · jusqu’à 1 000 000',
   price: chips(10),
   serialPrefix: 'MIL',
-  prizes: prizeTable(8_074_495, [
-    [10, 1_000_000],
-    [20, 600_000],
-    [50, 200_000],
-    [100, 100_000],
-    [500, 20_000],
-    [1_000, 5_000],
-    [10_000, 500],
-    [MILLION, 5],
+  prizes: lotTable(6_000_000, [
+    [4, 1_000_000],
+    [4, 100_000],
+    [6, 10_000],
+    [200, 1_000],
+    [24_000, 150],
+    [60_000, 100],
+    [108_800, 50],
+    [840_000, 20],
+    [760_000, 10],
   ]),
 
   generate(rng, prize) {
-    const winner = prize > 0 ? pick(rng, ZONE_IDS.filter((id) => PAYABLE[id].includes(prize))) : null;
-    const winFor = (id: MillionnaireZone): number => (winner === id ? prize : 0);
-    return [numbersZone(rng, winFor('numeros')), symbolsZone(rng, winFor('symboles')), chestZone(winFor('coffre')), millionZone(rng, winFor('million'))];
+    const parts = chooseDecomposition(rng, prize, SLOTS, 3);
+    return [
+      wheelZone(rng, partsFor(parts, 'roue')),
+      barsZone(rng, partsFor(parts, 'lingots')[0]),
+      stonesZone(rng, partsFor(parts, 'pierres')),
+      coinsZone(rng, partsFor(parts, 'pieces')),
+    ];
   },
 
   evaluate(zones) {
-    const numeros = zoneById(zones, 'numeros');
-    const winningNumbers = new Set(groupById(numeros, 'gagnants').cells.map((cell) => cell.value));
-    const matches = groupById(numeros, 'vos-numeros').cells.filter((cell) => winningNumbers.has(cell.value));
-    const numbersWin = matches.reduce((sum, cell) => sum + (cell.amount ?? 0), 0);
+    const wheel = zoneById(zones, 'roue');
+    const winningSegments = wheel.groups.filter((segment) => [...bySymbol(segment.cells.filter((cell) => cell.symbol !== 'AMOUNT')).values()].some((cells) => cells.length >= 2));
+    const wheelWin = winningSegments.reduce((sum, segment) => sum + (segment.cells.find((cell) => cell.symbol === 'AMOUNT')?.amount ?? 0), 0);
 
-    const symboles = zoneById(zones, 'symboles');
-    const triple = [...bySymbol(groupById(symboles, 'symboles').cells).values()].find((cells) => cells.length >= 3);
-    const symbolGain = firstCell(symboles, 'gain');
+    const bars = cellsOf(zoneById(zones, 'lingots'));
+    const byAmount = new Map<number, typeof bars>();
+    for (const cell of bars) byAmount.set(cell.amount ?? 0, [...(byAmount.get(cell.amount ?? 0) ?? []), cell]);
+    const pair = [...byAmount.values()].find((cells) => cells.length >= 2);
+    const barsWin = pair?.[0]?.amount ?? 0;
 
-    const chest = firstCell(zoneById(zones, 'coffre'), 'coffre');
-    const keys = groupById(zoneById(zones, 'million'), 'cles').cells;
-    const allKeys = keys.length > 0 && keys.every((cell) => cell.symbol === 'CLE');
+    const stones = zoneById(zones, 'pierres');
+    const winningDuels = stones.groups.filter((duel) => {
+      const diamond = duel.cells.find((cell) => cell.symbol === 'DIAMANT')?.value ?? 0;
+      const sapphire = duel.cells.find((cell) => cell.symbol === 'SAPHIR')?.value ?? 0;
+      return diamond > sapphire;
+    });
+    const stonesWin = winningDuels.reduce((sum, duel) => sum + (duel.cells.find((cell) => cell.symbol === 'AMOUNT')?.amount ?? 0), 0);
 
-    const results: ZoneResult[] = [
-      numbersWin > 0
-        ? zoneResult('numeros', numbersWin, 'Numéro gagnant trouvé', matches.map((cell) => cell.id))
-        : zoneResult('numeros', 0, 'Aucun numéro gagnant'),
-      triple !== undefined && symbolGain.amount !== null
-        ? zoneResult('symboles', symbolGain.amount, 'Trois symboles identiques', [...triple.map((cell) => cell.id), symbolGain.id])
-        : zoneResult('symboles', 0, 'Pas de brelan'),
-      chest.amount !== null ? zoneResult('coffre', chest.amount, 'Le coffre était plein', [chest.id]) : zoneResult('coffre', 0, 'Coffre vide'),
-      allKeys ? zoneResult('million', MILLION, 'LE MILLION !', keys.map((cell) => cell.id)) : zoneResult('million', 0, 'Il manque une clé'),
-    ];
-    return ticketEvaluation(results);
+    const bags = groupById(zoneById(zones, 'pieces'), 'pieces').cells.filter((cell) => cell.symbol === BAG);
+    const coinsWin = bags.reduce((sum, cell) => sum + (cell.amount ?? 0), 0);
+
+    return ticketEvaluation([
+      zoneResult('roue', wheelWin, wheelWin > 0 ? `${winningSegments.length} segment${winningSegments.length > 1 ? 's' : ''} gagnant${winningSegments.length > 1 ? 's' : ''}` : 'Aucune paire dans les segments', winningSegments.flatMap((segment) => segment.cells.map((cell) => cell.id))),
+      zoneResult('lingots', barsWin, barsWin > 0 ? 'Deux lingots identiques' : 'Toutes les sommes sont différentes', (pair ?? []).map((cell) => cell.id)),
+      zoneResult('pierres', stonesWin, stonesWin > 0 ? 'Le diamant l’emporte' : 'Le saphir l’emporte partout', winningDuels.flatMap((duel) => duel.cells.map((cell) => cell.id))),
+      zoneResult('pieces', coinsWin, coinsWin > 0 ? `${bags.length} sac${bags.length > 1 ? 's' : ''} trouvé${bags.length > 1 ? 's' : ''}` : 'Aucun sac', bags.map((cell) => cell.id)),
+    ]);
   },
 };
+
