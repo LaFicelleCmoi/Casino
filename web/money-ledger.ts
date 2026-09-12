@@ -1,6 +1,6 @@
 /** Soldes et bilan des jetons gagnés / perdus, conservés dans le navigateur d'une session à l'autre. */
 
-export type GameKey = 'blackjack' | 'holdem' | 'roulette';
+export type GameKey = 'blackjack' | 'holdem' | 'roulette' | 'grattage';
 
 export interface GameStats {
   /** Somme des gains nets des manches gagnantes. */
@@ -17,7 +17,7 @@ export const DEFAULT_BALANCE = 1_000;
 
 const LEDGER_KEY = 'casino-engine:ledger:v1';
 const BALANCE_KEY = 'casino-engine:balance:v1';
-const GAMES: readonly GameKey[] = ['blackjack', 'holdem', 'roulette'];
+const GAMES: readonly GameKey[] = ['blackjack', 'holdem', 'roulette', 'grattage'];
 const EMPTY: GameStats = { won: 0, lost: 0, rounds: 0 };
 
 export const netOf = (stats: GameStats): number => stats.won - stats.lost;
@@ -61,7 +61,12 @@ function parseStats(value: unknown): GameStats {
 
 export function loadLedger(): Ledger {
   const data = readJson(LEDGER_KEY);
-  return { blackjack: parseStats(data['blackjack']), holdem: parseStats(data['holdem']), roulette: parseStats(data['roulette']) };
+  return {
+    blackjack: parseStats(data['blackjack']),
+    holdem: parseStats(data['holdem']),
+    roulette: parseStats(data['roulette']),
+    grattage: parseStats(data['grattage']),
+  };
 }
 
 /** Enregistre le résultat net (positif = gain, négatif = perte) d'une manche terminée. */
@@ -98,7 +103,7 @@ export function startingBalance(game: GameKey, minimum = 1): number {
 
 /** Remet à zéro le bilan et ramène les soldes au solde de départ. */
 export function resetLedger(): Ledger {
-  const empty: Ledger = { blackjack: EMPTY, holdem: EMPTY, roulette: EMPTY };
+  const empty: Ledger = { blackjack: EMPTY, holdem: EMPTY, roulette: EMPTY, grattage: EMPTY };
   writeJson(LEDGER_KEY, empty);
   writeJson(BALANCE_KEY, {});
   return empty;
