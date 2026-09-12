@@ -13,13 +13,19 @@ import {
   type Street,
 } from '../src/holdem/index.js';
 import { chooseBotAction } from './holdem-bot.js';
-import { loadLedger, netOf, recordResult } from './money-ledger.js';
+import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { DealAnimator, cardText, escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 const HUMAN: PlayerId = playerId('vous');
 const HUMAN_SEAT = 0;
-const BUY_IN = 1_000;
-const RULES = { ...STANDARD_HOLDEM_RULES, seatCount: 6 };
+const BUY_IN = DEFAULT_BALANCE;
+/** Cave libre : le joueur se rassoit avec son solde sauvegardé, qu'il soit petit ou très au-dessus de la cave standard. */
+const RULES = {
+  ...STANDARD_HOLDEM_RULES,
+  seatCount: 6,
+  minBuyIn: STANDARD_HOLDEM_RULES.bigBlind,
+  maxBuyIn: chips(Number.MAX_SAFE_INTEGER),
+};
 const NAMES = ['Vous', 'Léa', 'Hugo', 'Nora', 'Malik', 'Inès'] as const;
 const BOT_DELAY_MS = 850;
 
@@ -59,21 +65,23 @@ function idFor(seatIndex: SeatIndex): PlayerId {
   return seatIndex === HUMAN_SEAT ? HUMAN : playerId(`bot-${seatIndex}`);
 }
 
-function sitDown(engine: HoldemController, state: HoldemState, seatIndex: SeatIndex): HoldemState {
+function sitDown(engine: HoldemController, state: HoldemState, seatIndex: SeatIndex, buyIn = BUY_IN): HoldemState {
   return expectOk(
     engine.apply(state, {
       type: 'SIT_DOWN',
       playerId: idFor(seatIndex),
       seatIndex,
       displayName: NAMES[seatIndex] ?? `Joueur ${seatIndex + 1}`,
-      buyIn: chips(BUY_IN),
+      buyIn: chips(buyIn),
     }),
   ).state;
 }
 
-function newTable(engine: HoldemController): HoldemState {
+function newTable(engine: HoldemController, heroBuyIn: number): HoldemState {
   let state: HoldemState = expectOk(engine.createTable(RULES));
-  for (let seatIndex = 0; seatIndex < NAMES.length; seatIndex += 1) state = sitDown(engine, state, seatIndex);
+  for (let seatIndex = 0; seatIndex < NAMES.length; seatIndex += 1) {
+    state = sitDown(engine, state, seatIndex, seatIndex === HUMAN_SEAT ? heroBuyIn : BUY_IN);
+  }
   return state;
 }
 
@@ -87,7 +95,7 @@ export function mountHoldem(root: HTMLElement): () => void {
   const rng = new CryptoRandomSource();
   const engine = new HoldemController(rng);
   const animator = new DealAnimator();
-  let state = newTable(engine);
+  let state = newTable(engine, startingBalance('holdem', RULES.bigBlind));
   let log: string[] = [];
   let notice = '';
   let raiseTo = 0;
@@ -285,6 +293,8 @@ export function mountHoldem(root: HTMLElement): () => void {
     animator.beginFrame();
 
     stackEl.textContent = formatChips(view.seats[HUMAN_SEAT]?.stack ?? 0);
+    // Le tapis hors mises engagées : quitter en pleine main abandonne ces jetons.
+    saveBalance('holdem', humanStack());
     const net = netOf(loadLedger().holdem);
     ledgerEl.textContent = formatSigned(net);
     ledgerEl.className = signClass(net);
@@ -360,7 +370,7 @@ export function mountHoldem(root: HTMLElement): () => void {
         break;
       case 'RESET':
         window.clearTimeout(timer);
-        state = newTable(engine);
+        state = newTable(engine, BUY_IN);
         log = [];
         startHand();
         break;
