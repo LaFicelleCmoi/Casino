@@ -17,17 +17,23 @@ export interface CheatTarget {
 type Tone = 'cmd' | 'ok' | 'error' | 'info';
 
 const MAX_AMOUNT = 1_000_000_000_000;
-const GAME_ALIASES: Readonly<Record<string, GameKey>> = { bj: 'blackjack', blackjack: 'blackjack', holdem: 'holdem', poker: 'holdem' };
-const GAME_LABELS: Readonly<Record<GameKey, string>> = { blackjack: 'Blackjack', holdem: "Hold'em" };
+const GAME_ALIASES: Readonly<Record<string, GameKey>> = {
+  bj: 'blackjack',
+  blackjack: 'blackjack',
+  holdem: 'holdem',
+  poker: 'holdem',
+  roulette: 'roulette',
+};
+const GAME_LABELS: Readonly<Record<GameKey, string>> = { blackjack: 'Blackjack', holdem: "Hold'em", roulette: 'Roulette' };
 
 const HELP = [
   'aide                         liste des codes',
-  'argent <montant> [bj|holdem] fixe le solde',
-  'ajouter <montant> [bj|holdem] ajoute des jetons (négatif pour en retirer)',
-  'motherlode [bj|holdem]       +50 000 jetons',
-  'rosebud [bj|holdem]          +1 000 jetons',
+  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem ou roulette)',
+  'ajouter <montant> [jeu]      ajoute des jetons (négatif pour en retirer)',
+  'motherlode [jeu]             +50 000 jetons',
+  'rosebud [jeu]                +1 000 jetons',
   'rayons-x                     montre les cartes cachées (croupier, adversaires)',
-  'voyance                      annonce les prochaines cartes (les vôtres et celles du croupier)',
+  'voyance                      annonce les prochaines cartes ou le prochain numéro de la roulette',
   'effacer                      vide la console',
   'Touche ² (ou `) pour ouvrir ou fermer, Échap pour fermer.',
 ];
@@ -96,7 +102,7 @@ export function mountCheatConsole(): void {
     let games: readonly GameKey[] = screen.games;
     if (gameArg !== undefined) {
       const game = GAME_ALIASES[gameArg.toLowerCase()];
-      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj ou holdem).`, 'error');
+      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem ou roulette).`, 'error');
       if (!games.includes(game)) return print(`Le solde ${GAME_LABELS[game]} se modifie depuis le lobby ou sa table.`, 'error');
       games = [game];
     }
@@ -118,14 +124,14 @@ export function mountCheatConsole(): void {
       case 'argent':
       case 'money': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : argent <montant> [bj|holdem]', 'error');
+        if (amount === null) return print('Usage : argent <montant> [bj|holdem|roulette]', 'error');
         changeBalance(args[1], () => amount);
         break;
       }
       case 'ajouter':
       case 'add': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : ajouter <montant> [bj|holdem]', 'error');
+        if (amount === null) return print('Usage : ajouter <montant> [bj|holdem|roulette]', 'error');
         changeBalance(args[1], (current) => current + amount);
         break;
       }
