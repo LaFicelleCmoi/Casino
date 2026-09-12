@@ -14,10 +14,20 @@ import {
   type RacingState,
 } from '../src/racing/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { showAlmanac, silence, whisper } from './racing-effects.js';
 import { RaceTrack } from './racing-track.js';
-import { escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  escapeHtml,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 type SlipKind = 'GAGNANT' | 'PLACE' | 'TIERCE' | 'QUINTE';
@@ -58,7 +68,7 @@ function selectionFor(kind: SlipKind, ordered: boolean, picked: readonly number[
 
 export function mountRacing(root: HTMLElement): () => void {
   const controller = new RacingController(new CryptoRandomSource());
-  let state: RacingState = expectOk(controller.createSession(PLAYER, startingBalance('courses', RULES.minStake)));
+  let state: RacingState = expectOk(controller.createSession(PLAYER, startingBalance('courses')));
   let message = 'Étudiez le programme, choisissez vos chevaux et pariez.';
   let tone: Tone = 'info';
   let slipKind: SlipKind = 'GAGNANT';
@@ -206,7 +216,7 @@ export function mountRacing(root: HTMLElement): () => void {
         : `<ol class="rc-picks">${picked.map((number) => `<li>${escapeHtml(horseLabel(number))}</li>`).join('')}</ol>`;
     const selection = selectionFor(slipKind, ordered, picked);
     const cannotBet = selection === null || state.player.bankroll < RULES.minStake;
-    const rebuy = state.player.bankroll + staked < RULES.minStake ? `<button class="btn" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>` : '';
+    const rebuy = state.player.bankroll + staked < RULES.minStake ? refillButtonHtml('courses', '') : '';
     return `
       <h2>Bulletin de pari</h2>
       <div class="rc-tabs">${tabs}</div>
@@ -337,10 +347,14 @@ export function mountRacing(root: HTMLElement): () => void {
         render();
         break;
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        picked = [];
-        track.setField(state.card);
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons.`, 'info'];
+        if (claimDailyRefill('courses')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          picked = [];
+          track.setField(state.card);
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
     }
