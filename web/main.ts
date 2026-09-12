@@ -1,6 +1,7 @@
+import { STANDARD_HOLDEM_RULES } from '../src/holdem/index.js';
 import { mountBlackjack } from './blackjack-view.js';
 import { mountHoldem } from './holdem-view.js';
-import { loadLedger, netOf, resetLedger, totalOf, type GameStats, type Ledger } from './money-ledger.js';
+import { loadLedger, netOf, resetLedger, startingBalance, totalOf, type GameStats, type Ledger } from './money-ledger.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -39,8 +40,11 @@ function ledgerHtml(ledger: Ledger): string {
     </div>`;
 }
 
-function mountLobby(root: HTMLElement): Unmount {
-  root.innerHTML = `
+const balanceHtml = (amount: number): string =>
+  `<span class="tile-balance">Votre solde : <strong>${formatChips(amount)}</strong> jetons</span>`;
+
+function lobbyHtml(): string {
+  return `
     <main class="lobby">
       <header class="lobby-header">
         <p class="eyebrow">Casino Engine</p>
@@ -52,24 +56,30 @@ function mountLobby(root: HTMLElement): Unmount {
           <span class="tile-suits" aria-hidden="true">♠ ♥</span>
           <h2>Blackjack</h2>
           <p>6 decks · croupier S17 · Blackjack 3:2 · split, double, assurance</p>
+          ${balanceHtml(startingBalance('blackjack'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
         <a class="tile tile-holdem" href="#/holdem">
           <span class="tile-suits" aria-hidden="true">♣ ♦</span>
           <h2>Texas Hold'em</h2>
           <p>No-Limit 5/10 · 5 adversaires IA · side pots et départage par kickers</p>
+          ${balanceHtml(startingBalance('holdem', STANDARD_HOLDEM_RULES.bigBlind))}
           <span class="tile-cta">S'asseoir</span>
         </a>
       </div>
-      <section class="ledger" data-ledger>${ledgerHtml(loadLedger())}</section>
+      <section class="ledger">${ledgerHtml(loadLedger())}</section>
       <footer class="lobby-footer">Jetons fictifs uniquement : aucun argent réel n'est en jeu.</footer>
     </main>`;
+}
+
+function mountLobby(root: HTMLElement): Unmount {
+  root.innerHTML = lobbyHtml();
 
   function onClick(event: MouseEvent): void {
     if (!(event.target instanceof Element) || event.target.closest('[data-action="RESET_LEDGER"]') === null) return;
-    if (!window.confirm('Remettre à zéro le bilan des gains et pertes ?')) return;
-    const section = root.querySelector<HTMLElement>('[data-ledger]');
-    if (section !== null) section.innerHTML = ledgerHtml(resetLedger());
+    if (!window.confirm('Remettre à zéro le bilan et revenir à 1 000 jetons dans chaque jeu ?')) return;
+    resetLedger();
+    root.innerHTML = lobbyHtml();
   }
 
   root.addEventListener('click', onClick);
@@ -94,5 +104,14 @@ function route(): void {
   }
 }
 
+// Fermer l'onglet en pleine manche équivaut à quitter la table : le bilan et le solde restent cohérents.
+window.addEventListener('pagehide', () => {
+  unmount();
+  unmount = () => {};
+});
+// Page restaurée depuis le cache de navigation : on se rassoit avec le solde sauvegardé.
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) route();
+});
 window.addEventListener('hashchange', route);
 route();
