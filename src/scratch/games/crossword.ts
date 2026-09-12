@@ -1,10 +1,26 @@
 import { InvariantViolation, chips, invariant, shuffle, type RandomSource } from '../../core/index.js';
-import { prizeTable } from '../prizes.js';
-import type { CrosswordBoard, PlacedWord, ScratchGameDefinition, TicketTypeId, WordDirection } from '../types/ticket.js';
+import { lotTable } from '../prizes.js';
+import type { CrosswordBoard, PlacedWord, ScratchGameDefinition, ScratchZone, WordDirection, ZoneResult } from '../types/ticket.js';
 import { FRENCH_WORDS } from './french-words.js';
-import { cellsOf, formatAmount, group, ticketEvaluation, zone, zoneById, zoneResult } from './helpers.js';
+import {
+  amountCell,
+  cellsOf,
+  chooseDecomposition,
+  decoyAmount,
+  formatAmount,
+  group,
+  groupById,
+  partsFor,
+  pick,
+  sample,
+  ticketEvaluation,
+  zone,
+  zoneById,
+  zoneResult,
+  type PrizeSlot,
+} from './helpers.js';
 
-/** Fréquence des lettres en français (‰) : les lettres du joueur ressemblent à celles d'un vrai ticket. */
+/** Fréquence des lettres en français (‰), adoucie au tirage pour garder des grilles variées. */
 const LETTER_FREQUENCIES: readonly (readonly [string, number])[] = [
   ['E', 121], ['S', 79], ['A', 76], ['I', 75], ['T', 72], ['N', 71], ['R', 66], ['U', 63], ['L', 55], ['O', 54],
   ['D', 37], ['C', 33], ['M', 30], ['P', 30], ['V', 16], ['G', 11], ['F', 11], ['B', 10], ['H', 9], ['Q', 9],
@@ -12,25 +28,17 @@ const LETTER_FREQUENCIES: readonly (readonly [string, number])[] = [
 ];
 
 const MAX_ATTEMPTS = 400;
+const BOARD_ATTEMPTS = 6;
 const CANDIDATES_PER_WORD = 120;
 
-export interface CrosswordSpec {
-  readonly type: TicketTypeId;
-  readonly name: string;
-  readonly tagline: string;
-  readonly price: number;
-  readonly serialPrefix: string;
-  readonly letterCount: number;
-  readonly letterColumns: number;
+export interface GridSpec {
   readonly wordCount: number;
   readonly width: number;
   readonly height: number;
-  /** Nombre maximal de mots complets sur un ticket perdant. */
-  readonly loseMaxWords: number;
-  readonly loseWeight: number;
-  /** [mots complets, gain, poids]. */
-  readonly tiers: readonly (readonly [words: number, amount: number, weight: number])[];
 }
+
+/** Barème d'une grille : [mots entièrement reconstitués, gain]. */
+type Bareme = readonly (readonly [words: number, amount: number])[];
 
 const key = (row: number, column: number): string => `${row},${column}`;
 
@@ -40,8 +48,9 @@ export function wordCells(placed: PlacedWord): { row: number; column: number; le
   return [...placed.word].map((letter, i) => ({ row: placed.row + (down ? i : 0), column: placed.column + (down ? 0 : i), letter }));
 }
 
-function drawLetters(rng: RandomSource, count: number): string[] {
-  const pool = [...LETTER_FREQUENCIES];
+/** `count` lettres distinctes, tirées selon la fréquence adoucie des lettres françaises. */
+export function drawLetters(rng: RandomSource, count: number): string[] {
+  const pool = LETTER_FREQUENCIES.map(([letter, weight]) => [letter, Math.max(1, Math.round(weight ** 0.6))] as [string, number]);
   const letters: string[] = [];
   while (letters.length < count) {
     let roll = rng.nextInt(pool.reduce((sum, [, weight]) => sum + weight, 0));
@@ -53,16 +62,18 @@ function drawLetters(rng: RandomSource, count: number): string[] {
   return letters;
 }
 
+const isWritable = (word: string, letters: ReadonlySet<string>): boolean => [...word].every((letter) => letters.has(letter));
+
 type Grid = Map<string, string>;
 
 /** Règles classiques : lettres communes identiques, pas de mot collé à un autre, au moins un croisement. */
-function canPlace(grid: Grid, width: number, height: number, candidate: PlacedWord): boolean {
+function canPlace(grid: Grid, spec: GridSpec, candidate: PlacedWord): boolean {
   const { word, row, column, direction } = candidate;
   const dr = direction === 'DOWN' ? 1 : 0;
   const dc = 1 - dr;
   const endRow = row + dr * (word.length - 1);
   const endColumn = column + dc * (word.length - 1);
-  if (row < 0 || column < 0 || endRow >= height || endColumn >= width) return false;
+  if (row < 0 || column < 0 || endRow >= spec.height || endColumn >= spec.width) return false;
   if (grid.has(key(row - dr, column - dc)) || grid.has(key(endRow + dr, endColumn + dc))) return false;
 
   let crossings = 0;
@@ -99,21 +110,21 @@ function crossingPlacements(rng: RandomSource, placed: readonly PlacedWord[], wo
 }
 
 /** Place `wordCount` mots croisés : exactement `goodCount` pris dans `good`, les autres dans `bad`. */
-function buildBoard(rng: RandomSource, spec: CrosswordSpec, good: readonly string[], bad: readonly string[], goodCount: number): CrosswordBoard | null {
+function buildBoard(rng: RandomSource, spec: GridSpec, good: readonly string[], bad: readonly string[], goodCount: number): CrosswordBoard | null {
   const grid: Grid = new Map();
   const words: PlacedWord[] = [];
   const kinds = shuffle(Array.from({ length: spec.wordCount }, (_, i) => i < goodCount), rng);
 
   for (const isGood of kinds) {
     const used = new Set(words.map((placed) => placed.word));
-    const candidates = shuffle((isGood ? good : bad).filter((word) => !used.has(word) && word.length <= Math.max(spec.width, spec.height)), rng);
+    const candidates = shuffle((isGood ? good : bad).filter((word) => !used.has(word)), rng);
     let chosen: PlacedWord | null = null;
     for (const word of candidates.slice(0, CANDIDATES_PER_WORD)) {
       if (words.length === 0) {
         if (word.length > spec.width) continue;
         chosen = { word, row: Math.floor(spec.height / 2), column: rng.nextInt(spec.width - word.length + 1), direction: 'ACROSS' };
       } else {
-        chosen = crossingPlacements(rng, words, word).find((option) => canPlace(grid, spec.width, spec.height, option)) ?? null;
+        chosen = crossingPlacements(rng, words, word).find((option) => canPlace(grid, spec, option)) ?? null;
       }
       if (chosen !== null) break;
     }
@@ -124,132 +135,279 @@ function buildBoard(rng: RandomSource, spec: CrosswordSpec, good: readonly strin
   return { width: spec.width, height: spec.height, words };
 }
 
-/** Mots de la grille entièrement composés des lettres du joueur. */
+/** Grille dont exactement `goodCount` mots s'écrivent avec `letters`, ou null si ces lettres ne le permettent pas. */
+export function printGrid(rng: RandomSource, letters: readonly string[], spec: GridSpec, goodCount: number): CrosswordBoard | null {
+  const available = new Set(letters);
+  const fitting = FRENCH_WORDS.filter((word) => Math.max(spec.width, spec.height) >= word.length);
+  const good = fitting.filter((word) => isWritable(word, available));
+  const bad = fitting.filter((word) => !isWritable(word, available));
+  if (good.length < goodCount || bad.length < spec.wordCount - goodCount) return null;
+  for (let attempt = 0; attempt < BOARD_ATTEMPTS; attempt += 1) {
+    const board = buildBoard(rng, spec, good, bad, goodCount);
+    if (board !== null) return board;
+  }
+  return null;
+}
+
+/** Mots de la grille entièrement reconstitués avec les lettres du joueur. */
 export function completedWords(board: CrosswordBoard, letters: ReadonlySet<string>): number[] {
-  return board.words.flatMap((placed, index) => ([...placed.word].every((letter) => letters.has(letter)) ? [index] : []));
+  return board.words.flatMap((placed, index) => (isWritable(placed.word, letters) ? [index] : []));
 }
 
-export function crosswordGame(spec: CrosswordSpec): ScratchGameDefinition {
-  const tiers = [...spec.tiers].sort(([a], [b]) => a - b);
-  invariant(tiers.every(([words]) => words > spec.loseMaxWords && words <= spec.wordCount), `Paliers incohérents pour ${spec.name}`);
-  const ruleText = tiers.map(([words, amount]) => `${words} mots : ${formatAmount(amount)}`).join(' · ');
-
-  return {
-    type: spec.type,
-    name: spec.name,
-    tagline: spec.tagline,
-    price: chips(spec.price),
-    serialPrefix: spec.serialPrefix,
-    prizes: prizeTable(
-      spec.loseWeight,
-      tiers.map(([, amount, weight]) => [amount, weight] as const),
-    ),
-
-    generate(rng, prize) {
-      const tier = tiers.find(([, amount]) => amount === prize);
-      invariant(prize === 0 || tier !== undefined, `Gain ${prize} absent du plan de lots ${spec.name}`);
-      const goodCount = tier === undefined ? rng.nextInt(spec.loseMaxWords + 1) : tier[0];
-
-      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-        const letters = drawLetters(rng, spec.letterCount);
-        const available = new Set(letters);
-        const good = FRENCH_WORDS.filter((word) => [...word].every((letter) => available.has(letter)));
-        const bad = FRENCH_WORDS.filter((word) => ![...word].every((letter) => available.has(letter)));
-        if (good.length < goodCount || bad.length < spec.wordCount - goodCount) continue;
-        const board = buildBoard(rng, spec, good, bad, goodCount);
-        if (board === null) continue;
-        return [
-          zone('lettres', 'Vos lettres', 'Grattez vos lettres : chaque mot de la grille entièrement composé de vos lettres compte.', [
-            group('lettres', 'lettres', `${spec.letterCount} lettres`, spec.letterColumns, shuffle(letters, rng).map((letter) => ({ symbol: 'LETTER', label: letter }))),
-          ]),
-          zone('grille', 'La grille', ruleText, [], board),
-        ];
-      }
-      throw new InvariantViolation(`Impossible d'imprimer une grille ${spec.name} à ${goodCount} mots`);
-    },
-
-    evaluate(zones) {
-      const letters = new Set(cellsOf(zoneById(zones, 'lettres')).map((cell) => cell.label));
-      const board = zoneById(zones, 'grille').board;
-      invariant(board !== null, 'Grille de mots croisés absente');
-      const completed = completedWords(board, letters);
-      const reached = tiers.filter(([words]) => words <= completed.length).at(-1);
-      const detail = `${completed.length} mot${completed.length > 1 ? 's' : ''} complet${completed.length > 1 ? 's' : ''}`;
-      return ticketEvaluation([
-        zoneResult('grille', reached === undefined ? 0 : reached[1], detail, completed.map((index) => `word:${index}`)),
-      ]);
-    },
-  };
+function amountForWords(bareme: Bareme, words: number): number {
+  let amount = 0;
+  for (const [count, value] of bareme) if (words >= count) amount = value;
+  return amount;
 }
 
-export const MOTS_CROISES = crosswordGame({
+function wordsForAmount(bareme: Bareme, amount: number): number {
+  const tier = bareme.find(([, value]) => value === amount);
+  invariant(tier !== undefined, `Gain ${amount} absent du barème`);
+  return tier[0];
+}
+
+const baremeText = (bareme: Bareme): string => bareme.map(([count, amount]) => `${count} mots : ${formatAmount(amount)}`).join(' · ');
+/** Une grille perdante compte 0 ou 1 mot reconstitué. */
+const losingWords = (rng: RandomSource): number => rng.nextInt(2);
+
+function lettersZone(rng: RandomSource, zoneId: string, title: string, letters: readonly string[], columns: number): ScratchZone {
+  return zone(zoneId, title, `Grattez vos ${letters.length} lettres : chacune peut servir plusieurs fois dans la grille.`, [
+    group(zoneId, 'lettres', `${letters.length} lettres`, columns, shuffle(letters, rng).map((letter) => ({ symbol: 'LETTER', label: letter }))),
+  ]);
+}
+
+function gridZone(zoneId: string, title: string, bareme: Bareme, board: CrosswordBoard): ScratchZone {
+  return zone(zoneId, title, `Gagnant dès 2 mots entièrement reconstitués · ${baremeText(bareme)}`, [], board);
+}
+
+function lettersOf(zones: readonly ScratchZone[], zoneId: string): Set<string> {
+  return new Set(cellsOf(zoneById(zones, zoneId)).map((cell) => cell.label));
+}
+
+function gridResult(zones: readonly ScratchZone[], zoneId: string, bareme: Bareme, letters: ReadonlySet<string>): ZoneResult {
+  const board = zoneById(zones, zoneId).board;
+  invariant(board !== null, `Grille ${zoneId} absente`);
+  const completed = completedWords(board, letters);
+  const plural = completed.length > 1 ? 's' : '';
+  return zoneResult(
+    zoneId,
+    amountForWords(bareme, completed.length),
+    `${completed.length} mot${plural} reconstitué${plural}`,
+    completed.map((index) => `word:${index}`),
+  );
+}
+
+// ─── Mots Croisés ─────────────────────────────────────────────────────────────
+
+const MC_BAREME: Bareme = [[2, 3], [3, 6], [4, 15], [5, 30], [6, 100], [7, 500], [8, 1_000], [9, 40_000]];
+const MC_GRID: GridSpec = { wordCount: 18, width: 13, height: 11 };
+
+/** Mots Croisés, d'après le règlement FDJ : 14 lettres, une grille de 18 mots, un seul lot selon le nombre de mots. */
+export const MOTS_CROISES: ScratchGameDefinition = {
   type: 'MOTS_CROISES',
   name: 'Mots Croisés',
-  tagline: '18 lettres · 10 mots · reconstituez le plus de mots possible',
-  price: 3,
+  tagline: '14 lettres · une grille de 18 mots · gagnant dès 2 mots · jusqu’à 40 000',
+  price: chips(3),
   serialPrefix: 'MCR',
-  letterCount: 18,
-  letterColumns: 6,
-  wordCount: 10,
-  width: 11,
-  height: 9,
-  loseMaxWords: 2,
-  loseWeight: 789_795,
-  tiers: [
-    [3, 3, 120_000],
-    [4, 6, 60_000],
-    [5, 15, 20_000],
-    [6, 30, 8_000],
-    [7, 100, 2_000],
-    [8, 1_000, 200],
-    [9, 20_000, 5],
-  ],
-});
+  prizes: lotTable(4_500_000, [
+    [3, 40_000],
+    [60, 1_000],
+    [251, 500],
+    [9_800, 100],
+    [54_340, 30],
+    [115_000, 15],
+    [630_000, 6],
+    [320_600, 3],
+  ]),
 
-export const MAXI_MOTS_CROISES = crosswordGame({
+  generate(rng, prize) {
+    const words = prize > 0 ? wordsForAmount(MC_BAREME, prize) : losingWords(rng);
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const letters = drawLetters(rng, 14);
+      const board = printGrid(rng, letters, MC_GRID, words);
+      if (board !== null) return [lettersZone(rng, 'lettres', 'Vos lettres', letters, 7), gridZone('grille', 'La grille', MC_BAREME, board)];
+    }
+    throw new InvariantViolation(`Impossible d'imprimer une grille Mots Croisés à ${words} mots`);
+  },
+
+  evaluate(zones) {
+    return ticketEvaluation([gridResult(zones, 'grille', MC_BAREME, lettersOf(zones, 'lettres'))]);
+  },
+};
+
+// ─── Maxi Mots Croisés ────────────────────────────────────────────────────────
+
+const MAXI_BAREME: Bareme = [[2, 5], [3, 10], [4, 20], [5, 50], [6, 200], [7, 1_000], [8, 10_000], [9, 125_000]];
+const MAXI_GRID: GridSpec = { wordCount: 18, width: 13, height: 11 };
+const MAXI_SLOTS: readonly PrizeSlot[] = [
+  { id: 'grille1', capacity: 1, amounts: MAXI_BAREME.map(([, amount]) => amount) },
+  { id: 'grille2', capacity: 1, amounts: MAXI_BAREME.map(([, amount]) => amount) },
+];
+
+/** Maxi Mots Croisés, d'après le règlement FDJ : 18 lettres pour 2 grilles de 18 mots ; les gains des deux grilles se cumulent. */
+export const MAXI_MOTS_CROISES: ScratchGameDefinition = {
   type: 'MAXI_MOTS_CROISES',
   name: 'Maxi Mots Croisés',
-  tagline: '20 lettres · 12 mots · la grille XL',
-  price: 5,
+  tagline: '18 lettres · 2 grilles de 18 mots · gains cumulables · jusqu’à 250 000',
+  price: chips(5),
   serialPrefix: 'MMC',
-  letterCount: 20,
-  letterColumns: 10,
-  wordCount: 12,
-  width: 12,
-  height: 10,
-  loseMaxWords: 3,
-  loseWeight: 787_896,
-  tiers: [
-    [4, 5, 120_000],
-    [5, 10, 60_000],
-    [6, 25, 20_000],
-    [7, 50, 10_000],
-    [8, 200, 2_000],
-    [9, 2_000, 100],
-    [11, 50_000, 4],
-  ],
-});
+  prizes: lotTable(4_500_000, [
+    [2, 250_000],
+    [5, 10_000],
+    [60, 1_000],
+    [9_000, 200],
+    [60_000, 50],
+    [111_990, 20],
+    [45_000, 15],
+    [517_520, 10],
+    [450_000, 5],
+  ]),
 
-export const MEGA_MOTS_CROISES = crosswordGame({
+  generate(rng, prize) {
+    const parts = chooseDecomposition(rng, prize, MAXI_SLOTS, 2);
+    const wordsIn = (slot: string): number => {
+      const [amount] = partsFor(parts, slot);
+      return amount === undefined ? losingWords(rng) : wordsForAmount(MAXI_BAREME, amount);
+    };
+    const words1 = wordsIn('grille1');
+    const words2 = wordsIn('grille2');
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const letters = drawLetters(rng, 18);
+      const first = printGrid(rng, letters, MAXI_GRID, words1);
+      const second = first === null ? null : printGrid(rng, letters, MAXI_GRID, words2);
+      if (first === null || second === null) continue;
+      return [
+        lettersZone(rng, 'lettres', 'Vos lettres', letters, 9),
+        gridZone('grille1', 'Grille 1', MAXI_BAREME, first),
+        gridZone('grille2', 'Grille 2', MAXI_BAREME, second),
+      ];
+    }
+    throw new InvariantViolation(`Impossible d'imprimer un Maxi Mots Croisés à ${words1} et ${words2} mots`);
+  },
+
+  evaluate(zones) {
+    const letters = lettersOf(zones, 'lettres');
+    return ticketEvaluation([gridResult(zones, 'grille1', MAXI_BAREME, letters), gridResult(zones, 'grille2', MAXI_BAREME, letters)]);
+  },
+};
+
+// ─── Méga Mots Croisés ────────────────────────────────────────────────────────
+
+const MEGA_BAREME: Bareme = [[2, 10], [3, 20], [4, 50], [5, 100], [6, 200], [7, 2_000], [8, 20_000], [9, 600_000]];
+const MEGA_GRID: GridSpec = { wordCount: 27, width: 17, height: 13 };
+const MYSTERY_AMOUNTS = [10, 20, 50, 200, 2_000];
+const SIX_WORDS_AMOUNTS = [10, 20, 50, 100, 200, 20_000];
+const MEGA_SLOTS: readonly PrizeSlot[] = [
+  { id: 'jeu1', capacity: 1, amounts: MEGA_BAREME.map(([, amount]) => amount) },
+  { id: 'jeu2', capacity: 2, amounts: MYSTERY_AMOUNTS },
+  { id: 'jeu3', capacity: 1, amounts: SIX_WORDS_AMOUNTS },
+];
+const isMysteryLength = (word: string): boolean => word.length >= 4 && word.length <= 6;
+
+/**
+ * Méga Mots Croisés, d'après le règlement FDJ. Jeu 1 : 20 lettres, grille de 27 mots. Jeu 2 : deux mots mystères,
+ * gagnants s'ils figurent dans la grille. Jeu 3 : 14 autres lettres pour reconstituer l'un des 6 mots imprimés.
+ */
+export const MEGA_MOTS_CROISES: ScratchGameDefinition = {
   type: 'MEGA_MOTS_CROISES',
-  name: 'Mega Mots Croisés',
-  tagline: '22 lettres · 14 mots · jusqu’à 250 000 jetons',
-  price: 10,
+  name: 'Méga Mots Croisés',
+  tagline: '20 lettres · grille de 27 mots · 2 jeux bonus · jusqu’à 600 000',
+  price: chips(10),
   serialPrefix: 'MGC',
-  letterCount: 22,
-  letterColumns: 11,
-  wordCount: 14,
-  width: 13,
-  height: 11,
-  loseMaxWords: 4,
-  loseWeight: 8_078_980,
-  tiers: [
-    [5, 10, 1_000_000],
-    [6, 20, 600_000],
-    [7, 50, 200_000],
-    [8, 100, 100_000],
-    [9, 500, 20_000],
-    [10, 5_000, 1_000],
-    [13, 250_000, 20],
-  ],
-});
+  prizes: lotTable(6_000_000, [
+    [2, 600_000],
+    [5, 20_000],
+    [20, 2_000],
+    [2_500, 200],
+    [66_700, 100],
+    [173_800, 50],
+    [800_000, 20],
+    [1_000_000, 10],
+  ]),
+
+  generate(rng, prize) {
+    const parts = chooseDecomposition(rng, prize, MEGA_SLOTS, 3);
+    const [jeu1Amount] = partsFor(parts, 'jeu1');
+    const mysteryWins = partsFor(parts, 'jeu2');
+    const [sixWordsWin] = partsFor(parts, 'jeu3');
+    const gridWords = jeu1Amount === undefined ? losingWords(rng) : wordsForAmount(MEGA_BAREME, jeu1Amount);
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const letters = drawLetters(rng, 20);
+      const board = printGrid(rng, letters, MEGA_GRID, gridWords);
+      if (board === null) continue;
+
+      const onBoard = new Set(board.words.map((placed) => placed.word));
+      const inGrid = shuffle([...onBoard].filter(isMysteryLength), rng);
+      const offGrid = FRENCH_WORDS.filter((word) => isMysteryLength(word) && !onBoard.has(word));
+      if (inGrid.length < mysteryWins.length || offGrid.length < 2) continue;
+      const mysteries = shuffle(
+        [0, 1].map((index) => {
+          const win = mysteryWins[index];
+          return win === undefined ? { word: pick(rng, offGrid), amount: decoyAmount(rng, MYSTERY_AMOUNTS) } : { word: inGrid[index] ?? '', amount: win };
+        }),
+        rng,
+      );
+      if (mysteries[0]?.word === mysteries[1]?.word) continue;
+
+      const bonusLetters = drawLetters(rng, 14);
+      const bonusAvailable = new Set(bonusLetters);
+      const writable = FRENCH_WORDS.filter((word) => isWritable(word, bonusAvailable));
+      const unwritable = FRENCH_WORDS.filter((word) => !isWritable(word, bonusAvailable));
+      if ((sixWordsWin !== undefined && writable.length === 0) || unwritable.length < 6) continue;
+      const sixWords = shuffle(
+        [
+          ...(sixWordsWin === undefined ? [] : [{ word: pick(rng, writable), amount: sixWordsWin }]),
+          ...sample(rng, unwritable, sixWordsWin === undefined ? 6 : 5).map((word) => ({ word, amount: decoyAmount(rng, SIX_WORDS_AMOUNTS) })),
+        ],
+        rng,
+      );
+
+      return [
+        lettersZone(rng, 'lettres', 'Jeu 1 · Vos lettres', letters, 10),
+        gridZone('grille', 'Jeu 1 · La grille', MEGA_BAREME, board),
+        zone(
+          'mysteres',
+          'Jeu 2 · Les mots mystères',
+          'Un mot mystère figure dans la grille du Jeu 1 : vous remportez le gain associé ; les deux mots se cumulent.',
+          mysteries.map((mystery, index) =>
+            group('mysteres', `mot-${index + 1}`, `Mot ${index + 1}`, 2, [{ symbol: 'MOT', label: mystery.word }, amountCell(mystery.amount)]),
+          ),
+        ),
+        zone('six-mots', 'Jeu 3 · Les six mots', 'Grattez 14 nouvelles lettres : un des six mots entièrement reconstitué rapporte la somme indiquée.', [
+          group('six-mots', 'lettres', '14 lettres', 7, shuffle(bonusLetters, rng).map((letter) => ({ symbol: 'LETTRE_BONUS', label: letter }))),
+          group('six-mots', 'mots', 'Les six mots', 2, sixWords.map(({ word, amount }) => ({ symbol: 'MOT_BONUS', label: word, amount })), true),
+        ]),
+      ];
+    }
+    throw new InvariantViolation(`Impossible d'imprimer un Méga Mots Croisés pour un lot de ${prize}`);
+  },
+
+  evaluate(zones) {
+    const board = zoneById(zones, 'grille').board;
+    invariant(board !== null, 'Grille du Jeu 1 absente');
+    const onBoard = new Set(board.words.map((placed) => placed.word));
+
+    const mysteries = zoneById(zones, 'mysteres').groups.filter((mystery) => {
+      const word = mystery.cells.find((cell) => cell.symbol === 'MOT');
+      return word !== undefined && onBoard.has(word.label);
+    });
+    const mysteriesWin = mysteries.reduce((sum, mystery) => sum + (mystery.cells.find((cell) => cell.symbol === 'AMOUNT')?.amount ?? 0), 0);
+
+    const sixWords = zoneById(zones, 'six-mots');
+    const bonusLetters = new Set(groupById(sixWords, 'lettres').cells.map((cell) => cell.label));
+    const rebuilt = groupById(sixWords, 'mots').cells.filter((cell) => isWritable(cell.label, bonusLetters));
+    const sixWordsWin = rebuilt.reduce((sum, cell) => sum + (cell.amount ?? 0), 0);
+
+    return ticketEvaluation([
+      gridResult(zones, 'grille', MEGA_BAREME, lettersOf(zones, 'lettres')),
+      zoneResult(
+        'mysteres',
+        mysteriesWin,
+        mysteriesWin > 0 ? `${mysteries.length} mot${mysteries.length > 1 ? 's' : ''} trouvé${mysteries.length > 1 ? 's' : ''} dans la grille` : 'Aucun mot mystère dans la grille',
+        mysteries.flatMap((mystery) => mystery.cells.map((cell) => cell.id)),
+      ),
+      zoneResult('six-mots', sixWordsWin, sixWordsWin > 0 ? `${rebuilt.map((cell) => cell.label).join(', ')} reconstitué` : 'Aucun mot reconstitué', rebuilt.map((cell) => cell.id)),
+    ]);
+  },
+};
