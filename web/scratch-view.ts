@@ -9,6 +9,7 @@ import {
   formatLapTime,
   isTicketType,
   maxPrize,
+  ticketCellIds,
   winProbability,
   type ScratchCell,
   type ScratchCommand,
@@ -21,7 +22,7 @@ import {
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
 import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { burnout, playTireScreech } from './scratch-effects.js';
-import { ScratchSurface, TICKET_THEMES, markLetter, showEvaluation, ticketHtml } from './scratch-ticket.js';
+import { ScratchSurface, TICKET_THEMES, lotsHtml, markLetter, showEvaluation, ticketHtml } from './scratch-ticket.js';
 import { escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
@@ -133,6 +134,7 @@ export function mountScratch(root: HTMLElement): () => void {
               <div><dt>Gain max</dt><dd>${formatChips(maxPrize(game.prizes))}</dd></div>
               <div><dt>Chances</dt><dd>1 sur ${odds}</dd></div>
             </dl>
+            ${lotsHtml(game)}
             <button class="btn primary" data-action="BUY" data-type="${game.type}" ${affordable ? '' : 'disabled'}>Acheter</button>
           </div>
         </article>`;
@@ -147,13 +149,14 @@ export function mountScratch(root: HTMLElement): () => void {
   function actionsHtml(ticket: Ticket): string {
     const game = SCRATCH_GAMES[ticket.type];
     if (state.phase === 'SCRATCHING') {
-      const total = cellsOfTicket(ticket).length;
+      const total = ticketCellIds(ticket).length;
       const done = ticket.scratched.length;
       return `
         <p class="sc-progress">${done} / ${total} cases grattées</p>
         <div class="sc-progress-bar"><span style="width:${Math.round((done / total) * 100)}%"></span></div>
         <button class="btn primary" data-action="SCRATCH_ALL">Tout gratter</button>
-        <p class="sc-tip">Grattez à la souris ou au doigt, ou utilisez « Gratter » sur chaque jeu.</p>`;
+        <p class="sc-tip">Grattez à la souris ou au doigt, ou utilisez « Gratter » sur chaque jeu.</p>
+        ${lotsHtml(game)}`;
     }
     const affordable = state.player.bankroll >= game.price;
     return `
@@ -161,7 +164,8 @@ export function mountScratch(root: HTMLElement): () => void {
         Racheter un ${escapeHtml(game.name)} · ${formatChips(game.price)}
       </button>
       <button class="btn ghost" data-action="CATALOG">Tous les tickets</button>
-      ${state.player.bankroll < CHEAPEST_TICKET ? `<button class="btn" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>` : ''}`;
+      ${state.player.bankroll < CHEAPEST_TICKET ? `<button class="btn" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>` : ''}
+      ${lotsHtml(game)}`;
   }
 
   function buildTicket(ticket: Ticket): void {
@@ -208,7 +212,7 @@ export function mountScratch(root: HTMLElement): () => void {
     }
     for (const zone of ticket.zones) {
       const button = ticketEl.querySelector<HTMLButtonElement>(`[data-action="SCRATCH_ZONE"][data-zone="${zone.id}"]`);
-      const ids = zone.groups.flatMap((cellGroup) => cellGroup.cells.map((cell) => cell.id));
+      const ids = ticketCellIds({ zones: [zone] });
       if (button !== null) button.hidden = ids.every((id) => revealedCells.has(id));
     }
     if (state.phase === 'REVEALED' && !evaluationShown) {
