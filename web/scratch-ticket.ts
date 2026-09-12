@@ -1,6 +1,9 @@
 import {
+  expectedReturnRate,
+  totalWeight,
   wordCells,
   type CellGroup,
+  type ScratchGameDefinition,
   type CrosswordBoard,
   type ScratchCell,
   type ScratchZone,
@@ -54,7 +57,8 @@ export function cellFace(cell: ScratchCell): string {
       return `<span class="sc-muted">${escapeHtml(cell.label)}</span>`;
     default: {
       const amount = cell.amount === null ? '' : `<small class="sc-cell-amount">${formatChips(cell.amount)}</small>`;
-      return `<span class="sc-sym">${escapeHtml(cell.label)}</span>${amount}`;
+      const textual = [...cell.label].length > 3 ? ' sc-sym-text' : '';
+      return `<span class="sc-sym${textual}">${escapeHtml(cell.label)}</span>${amount}`;
     }
   }
 }
@@ -85,11 +89,13 @@ function boardHtml(board: CrosswordBoard): string {
 }
 
 function groupHtml(cellGroup: CellGroup): string {
+  // Les éléments imprimés à découvert n'ont pas de pellicule.
+  const film = cellGroup.printed ? '' : '<canvas class="sc-film" aria-hidden="true"></canvas>';
   const cells = cellGroup.cells
     .map(
       (cell) =>
-        `<div class="sc-cell sc-symbol-${cell.symbol.toLowerCase()}" data-cell="${cell.id}">` +
-        `<div class="sc-face">${cellFace(cell)}</div><canvas class="sc-film" aria-hidden="true"></canvas></div>`,
+        `<div class="sc-cell sc-symbol-${cell.symbol.toLowerCase().replace(/[^a-z0-9_-]/g, '-')}${cellGroup.printed ? ' sc-printed' : ''}" data-cell="${cell.id}">` +
+        `<div class="sc-face">${cellFace(cell)}</div>${film}</div>`,
     )
     .join('');
   return `
@@ -100,7 +106,7 @@ function groupHtml(cellGroup: CellGroup): string {
 }
 
 function zoneHtml(zone: ScratchZone): string {
-  const hasCells = zone.groups.some((cellGroup) => cellGroup.cells.length > 0);
+  const hasCells = zone.groups.some((cellGroup) => !cellGroup.printed && cellGroup.cells.length > 0);
   return `
     <section class="sc-zone" data-zone="${zone.id}">
       <header class="sc-zone-head">
@@ -149,8 +155,10 @@ export function showEvaluation(ticketElement: HTMLElement, evaluation: TicketEva
 
     for (const mark of result.marks) {
       if (mark.startsWith('word:')) {
+        // Les index de mots sont propres à chaque grille (Maxi Mots Croisés en compte deux).
         const index = mark.slice('word:'.length);
-        for (const cell of ticketElement.querySelectorAll<HTMLElement>('.sc-board-cell')) {
+        const zoneElement = ticketElement.querySelector(`[data-zone="${CSS.escape(result.zoneId)}"]`);
+        for (const cell of zoneElement?.querySelectorAll<HTMLElement>('.sc-board-cell') ?? []) {
           if ((cell.dataset['words'] ?? '').split(' ').includes(index)) cell.classList.add('sc-word-win');
         }
       } else {
@@ -167,6 +175,24 @@ export function showEvaluation(ticketElement: HTMLElement, evaluation: TicketEva
     evaluation.total > 0
       ? `<strong>Gagné : ${formatChips(evaluation.total)} jetons</strong>${evaluation.multiplier > 1 ? `<span>Pit-Stop Bonus : gains ×${evaluation.multiplier}</span>` : ''}`
       : '<strong>Perdu</strong><span>Ce ticket ne rapporte rien, retentez votre chance !</span>';
+}
+
+/** Tableau des lots du règlement : nombre de lots par montant, pour un bloc de tickets. */
+export function lotsHtml(game: ScratchGameDefinition): string {
+  const block = totalWeight(game.prizes);
+  const winners = block - game.prizes.loseWeight;
+  const rows = [...game.prizes.tiers]
+    .sort((a, b) => b.amount - a.amount)
+    .map((tier) => `<tr><td>${formatChips(tier.weight)}</td><td>${formatChips(tier.amount)}</td></tr>`)
+    .join('');
+  const odds = (block / winners).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+  const rate = (expectedReturnRate(game.prizes, game.price) * 100).toLocaleString('fr-FR', { maximumFractionDigits: 1 });
+  return `
+    <details class="sc-lots">
+      <summary>Tableau des lots</summary>
+      <p>Par bloc de ${formatChips(block)} tickets : ${formatChips(winners)} gagnants, soit 1 chance sur ${odds} · ${rate} % des mises redistribuées.</p>
+      <table><thead><tr><th>Nombre de lots</th><th>Montant</th></tr></thead><tbody>${rows}</tbody></table>
+    </details>`;
 }
 
 function filmContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
