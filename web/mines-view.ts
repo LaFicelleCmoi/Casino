@@ -13,8 +13,18 @@ import {
   type MinesState,
 } from '../src/mines/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
-import { expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+  syncRefillButton,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -27,7 +37,7 @@ const tileName = (tile: number): string => `ligne ${Math.floor(tile / MINES_GRID
 
 export function mountMines(root: HTMLElement): () => void {
   const controller = new MinesController(new CryptoRandomSource());
-  let state: MinesState = expectOk(controller.createSession(PLAYER, startingBalance('mines', RULES.minStake)));
+  let state: MinesState = expectOk(controller.createSession(PLAYER, startingBalance('mines')));
   let stake = 10;
   let mineCount = 3;
   let message = 'Choisissez votre mise et le nombre de bombes, puis explorez la grille.';
@@ -64,7 +74,7 @@ export function mountMines(root: HTMLElement): () => void {
           <div class="mn-stats" data-stats></div>
           <button class="btn primary mn-main" data-action="MAIN"></button>
           <button class="btn ghost" data-action="RANDOM">Case au hasard</button>
-          <button class="btn ghost" data-action="REBUY" hidden>Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>
+          ${refillButtonHtml('mines', 'ghost', 'hidden')}
           <p class="message mn-message" data-message aria-live="polite"></p>
         </aside>
         <section class="mn-board">
@@ -165,6 +175,7 @@ export function mountMines(root: HTMLElement): () => void {
       mainEl.disabled = false;
     }
     rebuyEl.hidden = playing !== null || current.player.bankroll >= RULES.minStake;
+    syncRefillButton(rebuyEl, 'mines');
 
     tiles.forEach((tileEl, tile) => {
       let classes = 'mn-tile';
@@ -227,8 +238,12 @@ export function mountMines(root: HTMLElement): () => void {
         render();
         break;
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons.`, 'info'];
+        if (claimDailyRefill('mines')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
     }
