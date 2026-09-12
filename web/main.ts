@@ -1,11 +1,43 @@
 import { mountBlackjack } from './blackjack-view.js';
 import { mountHoldem } from './holdem-view.js';
+import { loadLedger, netOf, resetLedger, totalOf, type GameStats, type Ledger } from './money-ledger.js';
+import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
 
 const container = document.querySelector<HTMLElement>('#app');
 if (container === null) throw new Error('#app introuvable');
 const app: HTMLElement = container;
+
+function ledgerRow(label: string, stats: GameStats, total = false): string {
+  const net = netOf(stats);
+  return `
+    <tr class="${total ? 'ledger-total' : ''}">
+      <th scope="row">${label}</th>
+      <td>${formatChips(stats.rounds)}</td>
+      <td class="pos">+${formatChips(stats.won)}</td>
+      <td class="neg">−${formatChips(stats.lost)}</td>
+      <td class="${signClass(net)}">${formatSigned(net)}</td>
+    </tr>`;
+}
+
+function ledgerHtml(ledger: Ledger): string {
+  return `
+    <div class="ledger-head">
+      <h2>Votre bilan</h2>
+      <button class="btn ghost" data-action="RESET_LEDGER">Réinitialiser</button>
+    </div>
+    <div class="ledger-scroll">
+      <table class="ledger-table">
+        <thead><tr><th></th><th>Manches</th><th>Gagné</th><th>Perdu</th><th>Net</th></tr></thead>
+        <tbody>
+          ${ledgerRow('Blackjack', ledger.blackjack)}
+          ${ledgerRow("Texas Hold'em", ledger.holdem)}
+          ${ledgerRow('Total', totalOf(ledger), true)}
+        </tbody>
+      </table>
+    </div>`;
+}
 
 function mountLobby(root: HTMLElement): Unmount {
   root.innerHTML = `
@@ -29,9 +61,19 @@ function mountLobby(root: HTMLElement): Unmount {
           <span class="tile-cta">S'asseoir</span>
         </a>
       </div>
+      <section class="ledger" data-ledger>${ledgerHtml(loadLedger())}</section>
       <footer class="lobby-footer">Jetons fictifs uniquement : aucun argent réel n'est en jeu.</footer>
     </main>`;
-  return () => {};
+
+  function onClick(event: MouseEvent): void {
+    if (!(event.target instanceof Element) || event.target.closest('[data-action="RESET_LEDGER"]') === null) return;
+    if (!window.confirm('Remettre à zéro le bilan des gains et pertes ?')) return;
+    const section = root.querySelector<HTMLElement>('[data-ledger]');
+    if (section !== null) section.innerHTML = ledgerHtml(resetLedger());
+  }
+
+  root.addEventListener('click', onClick);
+  return () => root.removeEventListener('click', onClick);
 }
 
 let unmount: Unmount = () => {};
