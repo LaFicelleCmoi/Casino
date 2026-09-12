@@ -11,14 +11,14 @@ import {
   type HandOutcome,
   type PlayerHand,
 } from '../src/blackjack/index.js';
-import { recordResult, loadLedger, netOf } from './money-ledger.js';
+import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { DealAnimator, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
 const PLAYER: PlayerId = playerId('vous');
 const SEAT = 0;
-const BUY_IN = 1_000;
+const BUY_IN = DEFAULT_BALANCE;
 const CHIP_VALUES = [10, 25, 100, 500] as const;
 
 const TURN_ACTIONS = [
@@ -77,10 +77,10 @@ function chipsAtRisk(state: BlackjackState): number {
   return seat.hands.reduce((sum, hand) => sum + hand.bet, 0) + insurance;
 }
 
-function newTable(engine: BlackjackController): BlackjackState {
+function newTable(engine: BlackjackController, buyIn: number): BlackjackState {
   const table = expectOk(engine.createTable(STANDARD_BLACKJACK_RULES));
   return expectOk(
-    engine.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: chips(BUY_IN) }),
+    engine.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: chips(buyIn) }),
   ).state;
 }
 
@@ -109,7 +109,7 @@ function describe(state: BlackjackState, events: readonly BlackjackEvent[]): [st
 export function mountBlackjack(root: HTMLElement): () => void {
   const engine = new BlackjackController(new CryptoRandomSource());
   const animator = new DealAnimator();
-  let state = newTable(engine);
+  let state = newTable(engine, startingBalance('blackjack'));
   let message = 'Posez vos jetons, puis distribuez.';
   let tone: Tone = 'info';
 
@@ -215,6 +215,8 @@ export function mountBlackjack(root: HTMLElement): () => void {
     animator.beginFrame();
 
     bankrollEl.textContent = formatChips(seat?.bankroll ?? 0);
+    // Les mises engagées dans une manche en cours ne sont pas sauvegardées : quitter la table les abandonne.
+    if (seat !== null) saveBalance('blackjack', seat.bankroll + seat.pendingBet);
     const net = netOf(loadLedger().blackjack);
     ledgerEl.textContent = formatSigned(net);
     ledgerEl.className = signClass(net);
@@ -257,7 +259,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
     } else if (action === 'DEAL' || action === 'NEXT_ROUND') {
       dispatch({ type: action });
     } else if (action === 'REBUY') {
-      state = newTable(engine);
+      state = newTable(engine, BUY_IN);
       [message, tone] = [`Nouvelle cave de ${formatChips(BUY_IN)} jetons. Bonne chance !`, 'info'];
       render();
     } else if (isSimpleCommand(action)) {
