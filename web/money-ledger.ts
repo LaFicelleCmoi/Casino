@@ -1,4 +1,4 @@
-/** Bilan des jetons gagnés / perdus, conservé dans le navigateur d'une session à l'autre. */
+/** Soldes et bilan des jetons gagnés / perdus, conservés dans le navigateur d'une session à l'autre. */
 
 export type GameKey = 'blackjack' | 'holdem';
 
@@ -12,7 +12,11 @@ export interface GameStats {
 
 export type Ledger = Readonly<Record<GameKey, GameStats>>;
 
-const STORAGE_KEY = 'casino-engine:ledger:v1';
+/** Solde de départ, et de recave quand le solde sauvegardé ne permet plus de jouer. */
+export const DEFAULT_BALANCE = 1_000;
+
+const LEDGER_KEY = 'casino-engine:ledger:v1';
+const BALANCE_KEY = 'casino-engine:balance:v1';
 const GAMES: readonly GameKey[] = ['blackjack', 'holdem'];
 const EMPTY: GameStats = { won: 0, lost: 0, rounds: 0 };
 
@@ -31,29 +35,33 @@ export function totalOf(ledger: Ledger): GameStats {
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 
+/** Le stockage peut être indisponible (navigation privée, cookies bloqués) ou corrompu : on retombe sur `{}`. */
+function readJson(key: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? 'null');
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Stockage indisponible : les données restent valables pour la page en cours.
+  }
+}
+
 function parseStats(value: unknown): GameStats {
   if (typeof value !== 'object' || value === null) return EMPTY;
   const { won, lost, rounds } = value as Record<string, unknown>;
   return isCount(won) && isCount(lost) && isCount(rounds) ? { won, lost, rounds } : EMPTY;
 }
 
-/** Le stockage peut être indisponible (navigation privée, cookies bloqués) : on retombe sur un bilan vide. */
 export function loadLedger(): Ledger {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
-    const data = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-    return { blackjack: parseStats(data['blackjack']), holdem: parseStats(data['holdem']) };
-  } catch {
-    return { blackjack: EMPTY, holdem: EMPTY };
-  }
-}
-
-function saveLedger(ledger: Ledger): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
-  } catch {
-    // Stockage indisponible : le bilan reste valable pour la page en cours.
-  }
+  const data = readJson(LEDGER_KEY);
+  return { blackjack: parseStats(data['blackjack']), holdem: parseStats(data['holdem']) };
 }
 
 /** Enregistre le résultat net (positif = gain, négatif = perte) d'une manche terminée. */
@@ -68,12 +76,30 @@ export function recordResult(game: GameKey, net: number): Ledger {
       rounds: stats.rounds + 1,
     },
   };
-  saveLedger(next);
+  writeJson(LEDGER_KEY, next);
   return next;
 }
 
+/** Solde sauvegardé du jeu, ou null s'il n'a jamais été joué. */
+export function loadBalance(game: GameKey): number | null {
+  const value = readJson(BALANCE_KEY)[game];
+  return isCount(value) ? value : null;
+}
+
+export function saveBalance(game: GameKey, amount: number): void {
+  writeJson(BALANCE_KEY, { ...readJson(BALANCE_KEY), [game]: amount });
+}
+
+/** Solde avec lequel s'asseoir : le solde sauvegardé s'il atteint `minimum`, sinon une recave de DEFAULT_BALANCE. */
+export function startingBalance(game: GameKey, minimum = 1): number {
+  const saved = loadBalance(game);
+  return saved !== null && saved >= minimum ? saved : DEFAULT_BALANCE;
+}
+
+/** Remet à zéro le bilan et ramène les soldes au solde de départ. */
 export function resetLedger(): Ledger {
   const empty: Ledger = { blackjack: EMPTY, holdem: EMPTY };
-  saveLedger(empty);
+  writeJson(LEDGER_KEY, empty);
+  writeJson(BALANCE_KEY, {});
   return empty;
 }
