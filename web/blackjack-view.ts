@@ -11,7 +11,8 @@ import {
   type HandOutcome,
   type PlayerHand,
 } from '../src/blackjack/index.js';
-import { DealAnimator, expectOk, formatChips, queryIn } from './ui.js';
+import { recordResult, loadLedger, netOf } from './money-ledger.js';
+import { DealAnimator, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -57,8 +58,23 @@ function scoreLabel(hand: PlayerHand): string {
 }
 
 function signed(amount: number): string {
-  if (amount === 0) return '';
-  return amount > 0 ? `+${formatChips(amount)}` : `−${formatChips(-amount)}`;
+  return amount === 0 ? '' : formatSigned(amount);
+}
+
+function roundNet(state: BlackjackState & { phase: 'ROUND_OVER' }): number {
+  return (
+    state.settlements.reduce((sum, s) => sum + s.returned - s.stake, 0) +
+    state.insuranceSettlements.reduce((sum, s) => sum + s.returned - s.stake, 0)
+  );
+}
+
+/** Jetons engagés sur une manche en cours : perdus si le joueur quitte la table avant la fin. */
+function chipsAtRisk(state: BlackjackState): number {
+  if (state.phase !== 'INSURANCE' && state.phase !== 'PLAYER_TURNS') return 0;
+  const seat = state.seats[SEAT];
+  if (seat === null || seat === undefined) return 0;
+  const insurance = seat.insurance.status === 'TAKEN' ? seat.insurance.stake : 0;
+  return seat.hands.reduce((sum, hand) => sum + hand.bet, 0) + insurance;
 }
 
 function newTable(engine: BlackjackController): BlackjackState {
@@ -71,9 +87,7 @@ function newTable(engine: BlackjackController): BlackjackState {
 function describe(state: BlackjackState, events: readonly BlackjackEvent[]): [string, Tone] {
   switch (state.phase) {
     case 'ROUND_OVER': {
-      const net =
-        state.settlements.reduce((sum, s) => sum + s.returned - s.stake, 0) +
-        state.insuranceSettlements.reduce((sum, s) => sum + s.returned - s.stake, 0);
+      const net = roundNet(state);
       const prefix = state.dealerHadBlackjack ? 'Blackjack du croupier. ' : '';
       if (net > 0) return [`${prefix}Vous gagnez ${formatChips(net)} jetons.`, 'win'];
       if (net < 0) return [`${prefix}Vous perdez ${formatChips(-net)} jetons.`, 'loss'];
@@ -104,7 +118,10 @@ export function mountBlackjack(root: HTMLElement): () => void {
       <header class="topbar">
         <a class="back" href="#/">← Lobby</a>
         <h1>Blackjack</h1>
-        <div class="bankroll">Bankroll <strong data-bankroll></strong></div>
+        <div class="topbar-stats">
+          <div class="bankroll">Bilan <strong data-ledger></strong></div>
+          <div class="bankroll">Bankroll <strong data-bankroll></strong></div>
+        </div>
       </header>
       <section class="felt bj-felt">
         <p class="rules-strip">Le croupier reste sur soft 17 · Blackjack payé 3:2 · Assurance payée 2:1</p>
@@ -120,6 +137,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
     </div>`;
 
   const bankrollEl = queryIn<HTMLElement>(root, '[data-bankroll]');
+  const ledgerEl = queryIn<HTMLElement>(root, '[data-ledger]');
   const dealerCardsEl = queryIn<HTMLElement>(root, '[data-dealer-cards]');
   const dealerScoreEl = queryIn<HTMLElement>(root, '[data-dealer-score]');
   const messageEl = queryIn<HTMLElement>(root, '[data-message]');
@@ -197,6 +215,9 @@ export function mountBlackjack(root: HTMLElement): () => void {
     animator.beginFrame();
 
     bankrollEl.textContent = formatChips(seat?.bankroll ?? 0);
+    const net = netOf(loadLedger().blackjack);
+    ledgerEl.textContent = formatSigned(net);
+    ledgerEl.className = signClass(net);
     dealerCardsEl.innerHTML =
       view.dealerCards
         .map((card, index) =>
@@ -217,7 +238,9 @@ export function mountBlackjack(root: HTMLElement): () => void {
       message = result.error.message;
       tone = 'error';
     } else {
+      const wasOver = state.phase === 'ROUND_OVER';
       state = result.value.state;
+      if (!wasOver && state.phase === 'ROUND_OVER') recordResult('blackjack', roundNet(state));
       [message, tone] = describe(state, result.value.events);
     }
     render();
@@ -262,6 +285,8 @@ export function mountBlackjack(root: HTMLElement): () => void {
   render();
 
   return () => {
+    const abandoned = chipsAtRisk(state);
+    if (abandoned > 0) recordResult('blackjack', -abandoned);
     root.removeEventListener('click', onClick);
     window.removeEventListener('keydown', onKey);
   };
