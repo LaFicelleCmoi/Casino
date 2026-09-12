@@ -101,7 +101,7 @@ export function saveBalance(game: GameKey, amount: number): void {
 }
 
 /** Solde avec lequel s'asseoir : le solde sauvegardé, même nul, ou DEFAULT_BALANCE à la première visite. */
-export function startingBalance(game: GameKey, _minimum?: number): number {
+export function startingBalance(game: GameKey): number {
   return loadBalance(game) ?? DEFAULT_BALANCE;
 }
 
@@ -126,22 +126,4 @@ export function claimDailyRefill(game: GameKey): boolean {
   if (!canClaimDailyRefill(game)) return false;
   writeJson(REFILL_KEY, { ...readJson(REFILL_KEY), [game]: todayStamp() });
   return true;
-}
-
-/** Remet à zéro le bilan et ramène les soldes au solde de départ. */
-export function resetLedger(): Ledger {
-  const empty: Ledger = {
-    blackjack: EMPTY,
-    holdem: EMPTY,
-    roulette: EMPTY,
-    grattage: EMPTY,
-    courses: EMPTY,
-    plinko: EMPTY,
-    mines: EMPTY,
-    hilo: EMPTY,
-    pachinko: EMPTY,
-  };
-  writeJson(LEDGER_KEY, empty);
-  writeJson(BALANCE_KEY, {});
-  return empty;
 }
