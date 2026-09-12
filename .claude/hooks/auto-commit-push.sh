@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Hook Stop de Claude Code : à la fin de chaque réponse, un commit et un push par fichier modifié,
-# supprimé ou non suivi, sur la branche courante. Ne fait rien s'il n'y a aucun changement, en plein
+# Hook Stop de Claude Code : à la fin de chaque réponse, un commit par fichier modifié, supprimé ou non
+# suivi, puis UN SEUL push de la branche courante (chaque push déclenche un déploiement Vercel, dont le
+# quota quotidien est limité). Pousse aussi les commits locaux restés en attente. Ne fait rien en plein
 # merge ou rebase, ou en tête détachée.
 set -u
 
@@ -12,7 +13,6 @@ branch="$(git symbolic-ref --short -q HEAD)" || exit 0
 if [ -e "$git_dir/MERGE_HEAD" ] || [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; then
   exit 0
 fi
-[ -n "$(git status --porcelain --untracked-files=all)" ] || exit 0
 
 trailer='Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>'
 remote="$(git config --get "branch.$branch.remote" || echo origin)"
@@ -20,13 +20,22 @@ committed=0
 pushed=0
 errors=()
 
-push_branch() {
-  if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    git push -q "$remote" "$branch" 2>/dev/null
+has_upstream() {
+  git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1
+}
+
+# Des commits locaux attendent-ils un push ? Sans branche amont, tout commit existant est à pousser.
+ahead() {
+  if has_upstream; then
+    [ "$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)" -gt 0 ]
   else
-    git push -q -u "$remote" "$branch" 2>/dev/null
+    git rev-parse --verify -q HEAD >/dev/null
   fi
 }
+
+if [ -z "$(git status --porcelain --untracked-files=all)" ] && ! ahead; then
+  exit 0
+fi
 
 while IFS= read -r -d '' entry; do
   code="${entry:0:2}"
@@ -51,15 +60,24 @@ while IFS= read -r -d '' entry; do
 
   if git commit -q -m "$message" -m "$trailer" -- "${paths[@]}" >/dev/null 2>&1; then
     committed=$((committed + 1))
-    if push_branch; then pushed=$((pushed + 1)); else errors+=("push de $path"); fi
   else
     errors+=("$path")
   fi
 done < <(git status --porcelain -z --untracked-files=all)
 
-[ "$committed" -gt 0 ] || [ "${#errors[@]}" -gt 0 ] || exit 0
-summary="Push auto : $committed commit(s), $pushed push sur $branch"
+# Un seul push pour tous les commits : un seul déploiement.
+if ahead; then
+  if has_upstream; then
+    git push -q "$remote" "$branch" 2>/dev/null && pushed=1
+  else
+    git push -q -u "$remote" "$branch" 2>/dev/null && pushed=1
+  fi
+  [ "$pushed" -eq 1 ] || errors+=("push")
+fi
+
+[ "$committed" -gt 0 ] || [ "$pushed" -gt 0 ] || [ "${#errors[@]}" -gt 0 ] || exit 0
+summary="Commit auto : $committed commit(s), $pushed push sur $branch"
 [ "${#errors[@]}" -gt 0 ] && summary="$summary · échecs : ${errors[*]}"
 python3 -c 'import json, sys; print(json.dumps({"systemMessage": sys.argv[1]}, ensure_ascii=False))' "$summary" 2>/dev/null ||
-  printf '{"systemMessage": "Push auto terminé"}\n'
+  printf '{"systemMessage": "Commit auto terminé"}\n'
 exit 0
