@@ -200,6 +200,32 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
 .presets { display: flex; gap: 6px; }
 .presets .btn { padding: 8px 10px; font-size: 13px; }
 
+/* ─── Console de triche ────────────────────────────── */
+.cheat-toggle {
+  position: fixed; right: 16px; bottom: 16px; z-index: 50; width: 40px; height: 40px; border-radius: 12px;
+  border: 1px solid var(--line); background: rgba(8, 12, 10, 0.85); color: var(--muted);
+  font: 700 13px/1 ui-monospace, monospace; cursor: pointer; opacity: 0.55; transition: opacity 0.2s, color 0.2s;
+}
+.cheat-toggle:hover, .cheat-toggle:focus-visible, .cheat-toggle[aria-expanded="true"] { opacity: 1; color: var(--gold); }
+.cheat-console {
+  position: fixed; left: 50%; bottom: 68px; transform: translateX(-50%); z-index: 50;
+  width: min(640px, calc(100vw - 24px)); display: flex; flex-direction: column; border-radius: 16px;
+  background: rgba(6, 9, 7, 0.96); border: 1px solid rgba(224, 184, 79, 0.35); box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.9);
+  font: 13px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+.cheat-console[hidden] { display: none; }
+.cheat-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--gold); text-transform: uppercase; letter-spacing: 0.15em; font-size: 11px; }
+.cheat-close { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.cheat-close:hover { color: var(--text); }
+.cheat-output { list-style: none; margin: 0; padding: 10px 14px; max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.cheat-output li { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+.cheat-output li[data-tone="cmd"] { color: var(--text); }
+.cheat-output li[data-tone="ok"] { color: var(--win); }
+.cheat-output li[data-tone="error"] { color: #ff8a80; }
+.cheat-form { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); color: var(--gold); }
+.cheat-form input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text); font: inherit; }
+.card.xray { opacity: 0.8; outline: 2px dashed #7fd6ff; outline-offset: 2px; }
+
 /* ─── Responsive ───────────────────────────────────── */
 @media (max-width: 900px) {
   :root { --card-w: 60px; }
