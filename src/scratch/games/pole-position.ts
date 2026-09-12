@@ -1,9 +1,10 @@
 import { chips, invariant, shuffle, type RandomSource } from '../../core/index.js';
-import { prizeTable } from '../prizes.js';
+import { lotTable } from '../prizes.js';
 import type { ScratchGameDefinition, ScratchZone, ZoneResult } from '../types/ticket.js';
 import {
   amountCell,
   chance,
+  decoyAmount,
   firstCell,
   group,
   groupById,
@@ -16,8 +17,21 @@ import {
   type CellData,
 } from './helpers.js';
 
-export const POLE_POSITION_LIGHTS_AMOUNTS = [5, 10, 20, 50, 100, 500];
-export const POLE_POSITION_DUEL_AMOUNTS = [5, 10, 25, 50, 250, 1_000];
+/*
+ * Règlement (inventé) du ticket « POLE POSITION JACKPOT », rédigé sur le modèle des règlements de grattage :
+ *
+ *  - Prix : 5 jetons. Blocs de 3 000 000 tickets.
+ *  - Jeu 1 « Les Feux de Départ » : une rampe de 5 feux et une case MONTANT (5, 10, 20, 50, 100, 500 ou 2 500).
+ *    Au moins 3 feux verts : le joueur remporte le MONTANT.
+ *  - Jeu 2 « Le Duel Chrono » : « Temps de l'adversaire », « Votre temps » (mm:ss:cc) et la coupe
+ *    (5, 10, 25, 50, 250, 1 000 ou 2 500). Votre temps strictement inférieur : le joueur remporte la somme de la coupe.
+ *  - Jeu 3 « Pit-Stop Bonus » : sous le pneu, un pistolet pneumatique multiplie par 5 les gains des Jeux 1 et 2 ;
+ *    un pneu seul ne rapporte rien.
+ *  - Les gains des Jeux 1 et 2 s'additionnent, puis le Pit-Stop s'applique, pour former un lot unique du tableau.
+ */
+
+export const POLE_POSITION_LIGHTS_AMOUNTS = [5, 10, 20, 50, 100, 500, 2_500];
+export const POLE_POSITION_DUEL_AMOUNTS = [5, 10, 25, 50, 250, 1_000, 2_500];
 /** Gain maximum de la zone 2, sous la coupe du Duel Chrono. */
 export const POLE_POSITION_DUEL_MAX = Math.max(...POLE_POSITION_DUEL_AMOUNTS);
 export const PIT_STOP_MULTIPLIER = 5;
@@ -41,7 +55,9 @@ export interface RaceOutcome {
 
 const RACE_OUTCOMES: readonly RaceOutcome[] = [0, ...POLE_POSITION_LIGHTS_AMOUNTS].flatMap((lights) =>
   [0, ...POLE_POSITION_DUEL_AMOUNTS].flatMap((duel) =>
-    lights + duel === 0 ? [] : [1, PIT_STOP_MULTIPLIER].map((multiplier): RaceOutcome => ({ lights, duel, multiplier: multiplier as RaceOutcome['multiplier'] })),
+    lights + duel === 0
+      ? []
+      : [1, PIT_STOP_MULTIPLIER].map((multiplier): RaceOutcome => ({ lights, duel, multiplier: multiplier as RaceOutcome['multiplier'] })),
   ),
 );
 
@@ -53,14 +69,12 @@ export function raceOutcomesFor(total: number): readonly RaceOutcome[] {
 function lightsZone(rng: RandomSource, win: number): ScratchZone {
   const greens = win > 0 ? randomInt(rng, GREEN_LIGHTS_TO_WIN, 4) : rng.nextInt(GREEN_LIGHTS_TO_WIN);
   const lights = shuffle(
-    Array.from({ length: 5 }, (_, i): CellData =>
-      i < greens ? { symbol: 'GREEN_LIGHT', label: 'Feu vert' } : { symbol: 'RED_LIGHT', label: 'Feu rouge' },
-    ),
+    Array.from({ length: 5 }, (_, i): CellData => (i < greens ? { symbol: 'GREEN_LIGHT', label: 'Feu vert' } : { symbol: 'RED_LIGHT', label: 'Feu rouge' })),
     rng,
   );
-  return zone('feux', 'Jeu 1 · Les Feux de Départ', 'Trois feux verts sur la rampe : vous remportez le montant indiqué.', [
+  return zone('feux', 'Jeu 1 · Les Feux de Départ', 'La rampe compte 5 feux : au moins 3 feux verts, vous remportez la somme de la case Montant.', [
     group('feux', 'rampe', 'Rampe de départ', 5, lights),
-    group('feux', 'montant', 'Montant', 1, [amountCell(win > 0 ? win : pick(rng, POLE_POSITION_LIGHTS_AMOUNTS))]),
+    group('feux', 'montant', 'Montant', 1, [amountCell(win > 0 ? win : decoyAmount(rng, POLE_POSITION_LIGHTS_AMOUNTS))]),
   ]);
 }
 
@@ -71,11 +85,11 @@ function duelZone(rng: RandomSource, win: number): ScratchZone {
   return zone(
     'duel',
     'Jeu 2 · Le Duel Chrono',
-    'Votre temps au tour est inférieur à celui de l’adversaire : vous empochez la somme cachée sous la coupe.',
+    'Votre temps au tour est strictement inférieur à celui de l’adversaire : vous empochez la somme cachée sous la coupe.',
     [
       group('duel', 'adversaire', 'Temps de l’adversaire', 1, [lap(opponent)]),
       group('duel', 'vous', 'Votre temps', 1, [lap(yours)]),
-      group('duel', 'coupe', 'Sous la coupe', 1, [amountCell(win > 0 ? win : pick(rng, POLE_POSITION_DUEL_AMOUNTS))]),
+      group('duel', 'coupe', 'Sous la coupe', 1, [amountCell(win > 0 ? win : decoyAmount(rng, POLE_POSITION_DUEL_AMOUNTS))]),
     ],
   );
 }
@@ -83,27 +97,28 @@ function duelZone(rng: RandomSource, win: number): ScratchZone {
 function pitStopZone(multiplier: number): ScratchZone {
   const cell: CellData =
     multiplier === PIT_STOP_MULTIPLIER ? { symbol: 'IMPACT_WRENCH', label: 'Pistolet pneumatique' } : { symbol: 'TIRE', label: 'Pneu' };
-  return zone('pit', 'Jeu 3 · Pit-Stop Bonus', 'Un pistolet pneumatique sous le pneu : tous les gains du ticket sont multipliés par 5.', [
+  return zone('pit', 'Jeu 3 · Pit-Stop Bonus', 'Sous le pneu, un pistolet pneumatique multiplie par 5 les gains des Jeux 1 et 2 ; un pneu seul ne rapporte rien.', [
     group('pit', 'pneu', 'Le pneu de la monoplace', 1, [cell]),
   ]);
 }
 
-/** Ticket Formule 1 : départ, duel au chrono et arrêt au stand multiplicateur. */
+/** Ticket Formule 1 inventé : départ, duel au chrono et arrêt au stand multiplicateur. */
 export const POLE_POSITION: ScratchGameDefinition = {
   type: 'POLE_POSITION',
   name: 'Pole Position Jackpot',
   tagline: '3 zones de jeu · Multiplicateur Pit-Stop · Dépassez le chrono',
   price: chips(5),
   serialPrefix: 'PPJ',
-  prizes: prizeTable(785_490, [
-    [5, 120_000],
-    [10, 50_000],
-    [20, 30_000],
-    [50, 10_000],
-    [100, 4_000],
-    [500, 400],
-    [1_000, 100],
-    [5_000, 10],
+  prizes: lotTable(3_000_000, [
+    [2, 25_000],
+    [8, 5_000],
+    [40, 1_000],
+    [1_200, 250],
+    [12_000, 50],
+    [60_000, 25],
+    [100_000, 20],
+    [250_000, 10],
+    [600_000, 5],
   ]),
 
   generate(rng, prize) {
