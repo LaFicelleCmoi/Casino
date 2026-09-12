@@ -70,7 +70,7 @@ const lobbyBalance = (game: GameKey): number =>
   startingBalance(game, game === 'holdem' ? STANDARD_HOLDEM_RULES.bigBlind : 1);
 
 const balanceHtml = (amount: number): string =>
-  `<span class="tile-balance">Votre solde : <strong>${formatChips(amount)}</strong> jetons</span>`;
+  `<span class="tile-balance">Votre solde <strong>${formatChips(amount)} jetons</strong></span>`;
 
 function lobbyHtml(): string {
   return `
