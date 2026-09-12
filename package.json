@@ -1,7 +1,7 @@
 {
   "name": "casino-engine",
   "version": "0.1.0",
-  "description": "Moteurs logiques Blackjack et Texas Hold'em, agnostiques de toute UI, avec une interface web de démonstration.",
+  "description": "Moteurs logiques Blackjack, Texas Hold'em et Roulette Européenne, agnostiques de toute UI, avec une interface web de démonstration.",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm test",
+    "demo:roulette": "vite-node examples/roulette-round.ts",
     "dev": "vite",
     "build:web": "vite build",
     "preview": "vite preview"
