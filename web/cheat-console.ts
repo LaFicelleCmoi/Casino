@@ -27,23 +27,30 @@ const GAME_ALIASES: Readonly<Record<string, GameKey>> = {
   roulette: 'roulette',
   grattage: 'grattage',
   tickets: 'grattage',
+  courses: 'courses',
+  course: 'courses',
+  plinko: 'plinko',
 };
 const GAME_LABELS: Readonly<Record<GameKey, string>> = {
   blackjack: 'Blackjack',
   holdem: "Hold'em",
   roulette: 'Roulette',
   grattage: 'Tickets à gratter',
+  courses: 'Courses hippiques',
+  plinko: 'Plinko',
 };
 
 const HELP = [
   'aide                         liste des codes',
-  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem, roulette ou grattage)',
+  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem, roulette, grattage, courses ou plinko)',
   'ajouter <montant> [jeu]      ajoute des jetons (négatif pour en retirer)',
   'motherlode [jeu]             +50 000 jetons',
   'rosebud [jeu]                +1 000 jetons',
   'rayons-x                     montre les cartes cachées et rend la pellicule des tickets translucide',
   'voyance                      annonce les prochaines cartes, le prochain numéro ou le gain d’un ticket',
   'drszone / v12turbo           Pole Position Jackpot : gomme brûlée et chrono imbattable',
+  'almanach                     Courses : l’arrivée du tiercé chuchotée, cheval de tête en feu',
+  'gravity / newton             Plinko : billes lourdes attirées vers les ×1000 (retaper pour annuler)',
   'effacer                      vide la console',
   'Touche ² (ou `) pour ouvrir ou fermer, Échap pour fermer.',
 ];
@@ -112,7 +119,7 @@ export function mountCheatConsole(): void {
     let games: readonly GameKey[] = screen.games;
     if (gameArg !== undefined) {
       const game = GAME_ALIASES[gameArg.toLowerCase()];
-      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem, roulette ou grattage).`, 'error');
+      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem, roulette, grattage, courses ou plinko).`, 'error');
       if (!games.includes(game)) return print(`Le solde ${GAME_LABELS[game]} se modifie depuis le lobby ou sa table.`, 'error');
       games = [game];
     }
@@ -134,14 +141,14 @@ export function mountCheatConsole(): void {
       case 'argent':
       case 'money': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : argent <montant> [bj|holdem|roulette|grattage]', 'error');
+        if (amount === null) return print('Usage : argent <montant> [jeu]', 'error');
         changeBalance(args[1], () => amount);
         break;
       }
       case 'ajouter':
       case 'add': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : ajouter <montant> [bj|holdem|roulette|grattage]', 'error');
+        if (amount === null) return print('Usage : ajouter <montant> [jeu]', 'error');
         changeBalance(args[1], (current) => current + amount);
         break;
       }
