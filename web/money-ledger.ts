@@ -12,7 +12,7 @@ export interface GameStats {
 
 export type Ledger = Readonly<Record<GameKey, GameStats>>;
 
-/** Solde de départ, et de recave quand le solde sauvegardé ne permet plus de jouer. */
+/** Solde de départ, à la première visite d'un jeu. */
 export const DEFAULT_BALANCE = 1_000;
 
 const LEDGER_KEY = 'casino-engine:ledger:v1';
@@ -100,10 +100,32 @@ export function saveBalance(game: GameKey, amount: number): void {
   writeJson(BALANCE_KEY, { ...readJson(BALANCE_KEY), [game]: amount });
 }
 
-/** Solde avec lequel s'asseoir : le solde sauvegardé s'il atteint `minimum`, sinon une recave de DEFAULT_BALANCE. */
-export function startingBalance(game: GameKey, minimum = 1): number {
-  const saved = loadBalance(game);
-  return saved !== null && saved >= minimum ? saved : DEFAULT_BALANCE;
+/** Solde avec lequel s'asseoir : le solde sauvegardé, même nul, ou DEFAULT_BALANCE à la première visite. */
+export function startingBalance(game: GameKey, _minimum?: number): number {
+  return loadBalance(game) ?? DEFAULT_BALANCE;
+}
+
+/** Jetons récupérables une fois par jour dans chaque jeu, quand le solde ne permet plus de jouer. */
+export const DAILY_REFILL = 1_000;
+
+/** Jour local (AAAA-MM-JJ) de la dernière recharge prise, par jeu. */
+const REFILL_KEY = 'casino-engine:daily-refill:v1';
+
+/** La recharge revient à minuit, heure locale du joueur. */
+function todayStamp(now = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+export function canClaimDailyRefill(game: GameKey): boolean {
+  return readJson(REFILL_KEY)[game] !== todayStamp();
+}
+
+/** Consomme la recharge du jour pour ce jeu ; false si elle a déjà été prise aujourd'hui. */
+export function claimDailyRefill(game: GameKey): boolean {
+  if (!canClaimDailyRefill(game)) return false;
+  writeJson(REFILL_KEY, { ...readJson(REFILL_KEY), [game]: todayStamp() });
+  return true;
 }
 
 /** Remet à zéro le bilan et ramène les soldes au solde de départ. */
