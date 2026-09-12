@@ -48,12 +48,26 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
 .tile-cta { margin-top: auto; align-self: flex-start; padding: 10px 18px; border-radius: 999px; background: var(--gold); color: #1a1405; font-weight: 700; }
 .lobby-footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 
+.pos { color: var(--win) !important; }
+.neg { color: #ff8a80 !important; }
+.ledger { margin-top: 32px; padding: 24px; border-radius: 24px; background: var(--panel); border: 1px solid var(--line); }
+.ledger-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.ledger-head h2 { font-size: 24px; }
+.ledger-head .btn { padding: 8px 14px; font-size: 13px; }
+.ledger-scroll { overflow-x: auto; }
+.ledger-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.ledger-table th, .ledger-table td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ledger-table th:first-child { text-align: left; }
+.ledger-table thead th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; }
+.ledger-total th, .ledger-total td { font-weight: 800; border-bottom: none; }
+
 /* ─── Structure de jeu ─────────────────────────────── */
 .game { max-width: 1180px; margin: 0 auto; padding: 16px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-height: 100vh; }
 .topbar { display: flex; align-items: center; gap: 16px; }
 .topbar h1 { font-size: 26px; flex: 1; text-align: center; }
 .back { text-decoration: none; color: var(--muted); padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); }
 .back:hover { color: var(--text); }
+.topbar-stats { display: flex; gap: 18px; align-items: center; }
 .bankroll { color: var(--muted); font-size: 14px; white-space: nowrap; }
 .bankroll strong { color: var(--gold); font-size: 20px; margin-left: 6px; font-variant-numeric: tabular-nums; }
 
@@ -194,6 +208,8 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
   :root { --card-w: 46px; }
   .game { padding: 12px 10px 24px; }
   .topbar h1 { font-size: 20px; }
+  .topbar-stats { flex-direction: column; align-items: flex-end; gap: 2px; }
+  .bankroll strong { font-size: 16px; }
   .back { padding: 6px 8px; }
   .bj-felt { min-height: 460px; padding: 18px 12px; }
   .poker-felt { aspect-ratio: 3 / 4; min-height: 480px; border-radius: 42% / 30%; }
