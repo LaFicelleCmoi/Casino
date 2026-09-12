@@ -1,4 +1,4 @@
-import { CryptoRandomSource, chips, playerId, type PlayerId } from '../src/core/index.js';
+import { CryptoRandomSource, chips, playerId, type Card, type PlayerId } from '../src/core/index.js';
 import {
   BlackjackController,
   STANDARD_BLACKJACK_RULES,
@@ -11,8 +11,9 @@ import {
   type HandOutcome,
   type PlayerHand,
 } from '../src/blackjack/index.js';
+import { setCheatTarget, xrayEnabled } from './cheat-console.js';
 import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
-import { DealAnimator, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import { DealAnimator, cardText, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -209,6 +210,9 @@ export function mountBlackjack(root: HTMLElement): () => void {
     }
   }
 
+  /** Carte réelle derrière une carte face cachée du croupier, si les rayons X sont actifs. */
+  const hiddenCard = (index: number): Card | null => (xrayEnabled() ? (state.dealer.cards[index] ?? null) : null);
+
   function render(): void {
     const view = engine.project(state, PLAYER);
     const seat = view.seats[SEAT] ?? null;
@@ -223,7 +227,12 @@ export function mountBlackjack(root: HTMLElement): () => void {
     dealerCardsEl.innerHTML =
       view.dealerCards
         .map((card, index) =>
-          animator.card(`d${view.roundNumber}-${index}-${card.faceUp ? 'up' : 'down'}`, card.faceUp ? card.card : null),
+          animator.card(
+            `d${view.roundNumber}-${index}-${card.faceUp ? 'up' : 'down'}`,
+            card.faceUp ? card.card : hiddenCard(index),
+            false,
+            !card.faceUp && xrayEnabled(),
+          ),
         )
         .join('') || '<div class="card-slot"></div><div class="card-slot"></div>';
     dealerScoreEl.textContent = view.dealerScore === null ? '' : String(view.dealerScore.total);
@@ -282,6 +291,28 @@ export function mountBlackjack(root: HTMLElement): () => void {
     }
   }
 
+  setCheatTarget({
+    games: ['blackjack'],
+    getBalance: () => state.seats[SEAT]?.bankroll ?? 0,
+    setBalance: (_game, amount) => {
+      const seat = state.seats[SEAT];
+      if (seat === null || seat === undefined) return 'Aucun joueur assis.';
+      state = { ...state, seats: state.seats.with(SEAT, { ...seat, bankroll: chips(amount) }) };
+      render();
+      return null;
+    },
+    refresh: render,
+    foresee: () => {
+      const betweenRounds = state.phase === 'BETTING' || state.phase === 'ROUND_OVER';
+      if (betweenRounds && engine.project(state, PLAYER).shoe.reshufflePending) {
+        return 'Le sabot sera remélangé avant la prochaine manche : l’avenir est flou.';
+      }
+      const { cards, nextIndex } = state.shoe;
+      const next = cards.slice(nextIndex, nextIndex + 6);
+      return next.length === 0 ? 'Le sabot est vide.' : `Prochaines cartes du sabot, dans l'ordre : ${next.map(cardText).join(' ')}`;
+    },
+  });
+
   root.addEventListener('click', onClick);
   window.addEventListener('keydown', onKey);
   render();
@@ -289,6 +320,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
   return () => {
     const abandoned = chipsAtRisk(state);
     if (abandoned > 0) recordResult('blackjack', -abandoned);
+    setCheatTarget(null);
     root.removeEventListener('click', onClick);
     window.removeEventListener('keydown', onKey);
   };
