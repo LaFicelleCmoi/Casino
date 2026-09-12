@@ -1,4 +1,4 @@
-import { CryptoRandomSource, chips, playerId, type PlayerId, type SeatIndex } from '../src/core/index.js';
+import { CryptoRandomSource, chips, playerId, type Card, type PlayerId, type SeatIndex } from '../src/core/index.js';
 import {
   HoldemController,
   STANDARD_HOLDEM_RULES,
@@ -12,6 +12,7 @@ import {
   type PokerSeatView,
   type Street,
 } from '../src/holdem/index.js';
+import { setCheatTarget, xrayEnabled } from './cheat-console.js';
 import { chooseBotAction } from './holdem-bot.js';
 import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { DealAnimator, cardText, escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
@@ -60,6 +61,13 @@ const ACTION_BADGES: Record<PokerBettingActionType, string> = {
 };
 
 const STREET_LABELS: Record<Exclude<Street, 'PREFLOP'>, string> = { FLOP: 'Flop', TURN: 'Turn', RIVER: 'River' };
+
+const UPCOMING_STREETS: Readonly<Record<Street, readonly Exclude<Street, 'PREFLOP'>[]>> = {
+  PREFLOP: ['FLOP', 'TURN', 'RIVER'],
+  FLOP: ['TURN', 'RIVER'],
+  TURN: ['RIVER'],
+  RIVER: [],
+};
 
 function idFor(seatIndex: SeatIndex): PlayerId {
   return seatIndex === HUMAN_SEAT ? HUMAN : playerId(`bot-${seatIndex}`);
@@ -143,6 +151,27 @@ export function mountHoldem(root: HTMLElement): () => void {
 
   const humanStack = (): number => state.seats[HUMAN_SEAT]?.stack ?? 0;
 
+  /** Carte réelle derrière une carte face cachée d'un adversaire, si les rayons X sont actifs. */
+  const hiddenCard = (seatIndex: number, cardIndex: number): Card | null =>
+    xrayEnabled() ? (state.seats[seatIndex]?.holeCards?.[cardIndex] ?? null) : null;
+
+  /** Cartes communes à venir, en sautant la carte brûlée avant chaque street. */
+  function foresee(): string {
+    const current = state;
+    if (!isHandInProgress(current)) return 'Aucune main en cours : le paquet sera mélangé à la prochaine donne.';
+    const streets = UPCOMING_STREETS[current.phase];
+    if (streets.length === 0) return 'Toutes les cartes communes sont déjà sur la table.';
+    let index = current.deck.nextIndex;
+    return streets
+      .map((street) => {
+        const count = street === 'FLOP' ? 3 : 1;
+        const drawn = current.deck.cards.slice(index + 1, index + 1 + count);
+        index += 1 + count;
+        return `${STREET_LABELS[street]} : ${drawn.map(cardText).join(' ')}`;
+      })
+      .join(' · ');
+  }
+
   const nameOf = (seatIndex: SeatIndex): string =>
     state.seats[seatIndex]?.player.displayName ?? `Siège ${seatIndex + 1}`;
 
@@ -209,7 +238,12 @@ export function mountHoldem(root: HTMLElement): () => void {
         ? ''
         : seat.holeCards
             .map((card, i) =>
-              animator.card(`h${view.handNumber}-${index}-${i}-${card.faceUp ? 'up' : 'down'}`, card.faceUp ? card.card : null, true),
+              animator.card(
+                `h${view.handNumber}-${index}-${i}-${card.faceUp ? 'up' : 'down'}`,
+                card.faceUp ? card.card : hiddenCard(index, i),
+                true,
+                !card.faceUp && xrayEnabled(),
+              ),
             )
             .join('');
 
@@ -415,6 +449,23 @@ export function mountHoldem(root: HTMLElement): () => void {
     }
   }
 
+  setCheatTarget({
+    games: ['holdem'],
+    getBalance: humanStack,
+    setBalance: (_game, amount) => {
+      const seat = state.seats[HUMAN_SEAT];
+      if (seat === null || seat === undefined) return 'Aucun joueur assis.';
+      if (isHandInProgress(state)) return 'Main en cours : le tapis se modifie entre deux mains.';
+      // Un joueur ruiné est mis à l'écart par le moteur : on le rassoit s'il retrouve des jetons.
+      const status = seat.status === 'SITTING_OUT' && amount > 0 ? 'IN_HAND' : seat.status;
+      state = { ...state, seats: state.seats.with(HUMAN_SEAT, { ...seat, stack: chips(amount), status }) };
+      render();
+      return null;
+    },
+    refresh: render,
+    foresee,
+  });
+
   root.addEventListener('click', onClick);
   root.addEventListener('input', onInput);
   window.addEventListener('keydown', onKey);
@@ -425,6 +476,7 @@ export function mountHoldem(root: HTMLElement): () => void {
     window.clearTimeout(timer);
     // Quitter en pleine main abandonne les jetons déjà engagés.
     if (handStartStack !== null && isHandInProgress(state)) recordResult('holdem', humanStack() - handStartStack);
+    setCheatTarget(null);
     root.removeEventListener('click', onClick);
     root.removeEventListener('input', onInput);
     window.removeEventListener('keydown', onKey);
