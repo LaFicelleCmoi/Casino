@@ -14,8 +14,20 @@ import {
 } from '../src/holdem/index.js';
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
 import { chooseBotAction } from './holdem-bot.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
-import { DealAnimator, cardText, escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import { DAILY_REFILL, DEFAULT_BALANCE, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import {
+  DealAnimator,
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  cardText,
+  escapeHtml,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 const HUMAN: PlayerId = playerId('vous');
 const HUMAN_SEAT = 0;
@@ -85,9 +97,11 @@ function sitDown(engine: HoldemController, state: HoldemState, seatIndex: SeatIn
   ).state;
 }
 
+/** Le joueur ne s'assoit que s'il peut payer la grosse blinde ; ruiné, il attend la recharge du jour. */
 function newTable(engine: HoldemController, heroBuyIn: number): HoldemState {
   let state: HoldemState = expectOk(engine.createTable(RULES));
   for (let seatIndex = 0; seatIndex < NAMES.length; seatIndex += 1) {
+    if (seatIndex === HUMAN_SEAT && heroBuyIn < RULES.minBuyIn) continue;
     state = sitDown(engine, state, seatIndex, seatIndex === HUMAN_SEAT ? heroBuyIn : BUY_IN);
   }
   return state;
@@ -103,7 +117,7 @@ export function mountHoldem(root: HTMLElement): () => void {
   const rng = new CryptoRandomSource();
   const engine = new HoldemController(rng);
   const animator = new DealAnimator();
-  let state = newTable(engine, startingBalance('holdem', RULES.bigBlind));
+  let state = newTable(engine, startingBalance('holdem'));
   let log: string[] = [];
   let notice = '';
   let raiseTo = 0;
@@ -284,9 +298,10 @@ export function mountHoldem(root: HTMLElement): () => void {
       `<button class="btn ${variant}" data-action="${action}" ${data}>${label}</button>`;
 
     if (view.phase === 'WAITING' || view.phase === 'HAND_COMPLETE') {
-      const broke = (view.seats[HUMAN_SEAT]?.stack ?? 0) === 0;
+      // Sans de quoi payer la grosse blinde, le joueur ne peut plus rejouer : place à la recharge du jour.
+      const broke = (view.seats[HUMAN_SEAT]?.stack ?? 0) < RULES.bigBlind;
       return broke
-        ? `<p class="waiting">Vous n'avez plus de jetons.</p>${button('RESET', 'Nouvelle table', 'primary')}`
+        ? `<p class="waiting">Vous n'avez plus de jetons.</p>${refillButtonHtml('holdem')}`
         : button('NEXT_HAND', 'Main suivante <kbd>↵</kbd>', 'primary');
     }
 
@@ -381,6 +396,11 @@ export function mountHoldem(root: HTMLElement): () => void {
   }
 
   function startHand(): void {
+    // Joueur ruiné, donc debout : aucune main ne se joue sans lui.
+    if ((state.seats[HUMAN_SEAT] ?? null) === null) {
+      render();
+      return;
+    }
     // Recave automatique des bots éliminés, pour garder une table pleine.
     for (const seat of state.seats) {
       if (seat !== null && seat.seatIndex !== HUMAN_SEAT && seat.stack === 0) {
@@ -402,10 +422,16 @@ export function mountHoldem(root: HTMLElement): () => void {
       case 'NEXT_HAND':
         startHand();
         break;
-      case 'RESET':
+      case 'REBUY':
+        if (!claimDailyRefill('holdem')) {
+          notice = REFILL_USED_MESSAGE;
+          render();
+          break;
+        }
         window.clearTimeout(timer);
-        state = newTable(engine, BUY_IN);
+        state = newTable(engine, humanStack() + DAILY_REFILL);
         log = [];
+        pushLog(REFILL_DONE_MESSAGE);
         startHand();
         break;
       case 'FOLD':
@@ -454,7 +480,13 @@ export function mountHoldem(root: HTMLElement): () => void {
     getBalance: humanStack,
     setBalance: (_game, amount) => {
       const seat = state.seats[HUMAN_SEAT];
-      if (seat === null || seat === undefined) return 'Aucun joueur assis.';
+      if (seat === null || seat === undefined) {
+        // Joueur ruiné, donc debout (aucune main ne tourne) : le nouveau solde le rassoit.
+        if (amount < RULES.minBuyIn) return `Il faut au moins ${formatChips(RULES.minBuyIn)} jetons pour s'asseoir.`;
+        state = sitDown(engine, state, HUMAN_SEAT, amount);
+        render();
+        return null;
+      }
       if (isHandInProgress(state)) return 'Main en cours : le tapis se modifie entre deux mains.';
       // Un joueur ruiné est mis à l'écart par le moteur : on le rassoit s'il retrouve des jetons.
       const status = seat.status === 'SITTING_OUT' && amount > 0 ? 'IN_HAND' : seat.status;
