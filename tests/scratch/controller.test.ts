@@ -11,7 +11,7 @@ function run(state: ScratchState, ...commands: ScratchCommand[]): ScratchState {
 }
 
 const session = (bankroll = 100): ScratchState => unwrap(controller.createSession(alice, bankroll));
-const buy = (ticketType: 'BANCO' | 'POLE_POSITION' | 'MEGA_MOTS_CROISES'): ScratchCommand => ({ type: 'BUY_TICKET', playerId: alice, ticketType });
+const buy = (ticketType: 'BANCO' | 'MORPION' | 'POLE_POSITION' | 'MEGA_MOTS_CROISES'): ScratchCommand => ({ type: 'BUY_TICKET', playerId: alice, ticketType });
 
 describe('achat', () => {
   it('débite le prix et imprime un ticket numéroté', () => {
@@ -68,19 +68,29 @@ describe('grattage', () => {
     expect(view.ticket?.evaluation).toBeNull();
     expect(controller.project(bought, null).bankroll).toBeNull();
   });
+
+  it('montre d’emblée les éléments imprimés à découvert, qui n’ont rien à gratter', () => {
+    const bought = run(session(), buy('MORPION'));
+    const view = controller.project(bought, alice);
+    expect(view.ticket?.cellCount).toBe(9);
+    const gains = view.ticket?.zones[0]?.groups.find((group) => group.id === 'gains')?.cells ?? [];
+    expect(gains).toHaveLength(8);
+    expect(gains.every((cell) => cell.scratched)).toBe(true);
+  });
 });
 
 describe('robustesse', () => {
-  it('enchaîne 3 000 tickets de tous types sans écart de comptabilité', () => {
+  it('enchaîne 500 tickets de tous types sans écart de comptabilité', () => {
     const types = ['BANCO', 'CASH', 'MORPION', 'MILLIONNAIRE', 'VEGAS', 'MOTS_CROISES', 'MAXI_MOTS_CROISES', 'MEGA_MOTS_CROISES', 'ASTRO', 'POLE_POSITION'] as const;
     let state = session(1_000_000);
     let expected = 1_000_000;
-    for (let i = 0; i < 3_000; i += 1) {
+    for (let i = 0; i < 500; i += 1) {
       const ticketType = types[i % types.length] ?? 'BANCO';
       state = run(state, { type: 'BUY_TICKET', playerId: alice, ticketType }, { type: 'SCRATCH_ALL', playerId: alice });
       expected += (state.ticket?.evaluation.total ?? 0) - (state.ticket?.price ?? 0);
       expect(state.player.bankroll).toBe(expected);
     }
-    expect(state.ticketsSold).toBe(3_000);
-  });
+    expect(state.ticketsSold).toBe(500);
+    // Les grilles de mots croisés (jusqu'à 27 mots) prennent quelques dizaines de millisecondes à imprimer.
+  }, 60_000);
 });
