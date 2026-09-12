@@ -18,9 +18,19 @@ import {
   type PachinkoState,
 } from '../src/pachinko/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { PachinkoBoard } from './pachinko-board.js';
-import { expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+  syncRefillButton,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -66,7 +76,7 @@ class PachinkoRandom implements RandomSource {
 export function mountPachinko(root: HTMLElement): () => void {
   const rng = new PachinkoRandom(new CryptoRandomSource());
   const controller = new PachinkoController(rng);
-  let state: PachinkoState = expectOk(controller.createSession(PLAYER, startingBalance('pachinko', RULES.minStake)));
+  let state: PachinkoState = expectOk(controller.createSession(PLAYER, startingBalance('pachinko')));
   let stake = 10;
   let message = 'Choisissez la mise par bille, puis lancez : visez les poches Bonus pour le Fever Mode.';
   let tone: Tone = 'info';
@@ -111,7 +121,7 @@ export function mountPachinko(root: HTMLElement): () => void {
           <span class="pk-label">Poches</span>
           <ul class="pc-pockets">${legend}</ul>
           <p class="pc-rtp">Retour théorique ${(returnToPlayer() * 100).toFixed(1).replace('.', ',')} % · 777 sur une poche Bonus (1 chance sur ${JACKPOT_ODDS}) : ${FEVER_BALLS} billes gratuites aux gains ×${FEVER_MULTIPLIER}</p>
-          <button class="btn ghost" data-action="REBUY" hidden>Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>
+          ${refillButtonHtml('pachinko', 'ghost', 'hidden')}
           <p class="message pc-message" data-message aria-live="polite"></p>
         </aside>
         <section class="pc-stage" data-stage>
@@ -162,6 +172,7 @@ export function mountPachinko(root: HTMLElement): () => void {
     cascadeEl.disabled = fever;
     stageEl.classList.toggle('pc-fevering', fever);
     rebuyEl.hidden = fever || board.inFlight > 0 || state.player.bankroll >= RULES.minStake;
+    syncRefillButton(rebuyEl, 'pachinko');
     historyEl.innerHTML = history
       .map((entry) => `<span class="pc-chip ${entry.golden ? 'is-gold' : entry.won ? 'is-win' : ''}">×${formatPocketMultiplier(entry.multiplier)}</span>`)
       .join('');
@@ -281,8 +292,12 @@ export function mountPachinko(root: HTMLElement): () => void {
         stakeEl.value = String(stake);
         break;
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons.`, 'info'];
+        if (claimDailyRefill('pachinko')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
     }
