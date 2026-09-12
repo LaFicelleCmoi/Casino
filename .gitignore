@@ -3,3 +3,4 @@ dist/
 web-dist/
 coverage/
 .vercel/
+.claude/settings.local.json
