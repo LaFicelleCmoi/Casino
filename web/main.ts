@@ -13,6 +13,7 @@ import {
   type GameStats,
   type Ledger,
 } from './money-ledger.js';
+import { mountRoulette } from './roulette-view.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -45,6 +46,7 @@ function ledgerHtml(ledger: Ledger): string {
         <tbody>
           ${ledgerRow('Blackjack', ledger.blackjack)}
           ${ledgerRow("Texas Hold'em", ledger.holdem)}
+          ${ledgerRow('Roulette', ledger.roulette)}
           ${ledgerRow('Total', totalOf(ledger), true)}
         </tbody>
       </table>
@@ -64,7 +66,7 @@ function lobbyHtml(): string {
       <header class="lobby-header">
         <p class="eyebrow">Casino Engine</p>
         <h1>Choisissez votre table</h1>
-        <p class="lede">Deux moteurs de jeu en TypeScript : state machine stricte, mélange cryptographique, projection anti-triche.</p>
+        <p class="lede">Trois moteurs de jeu en TypeScript : state machine stricte, mélange cryptographique, projection anti-triche.</p>
       </header>
       <div class="tiles">
         <a class="tile tile-blackjack" href="#/blackjack">
@@ -79,6 +81,13 @@ function lobbyHtml(): string {
           <h2>Texas Hold'em</h2>
           <p>No-Limit 5/10 · 5 adversaires IA · side pots et départage par kickers</p>
           ${balanceHtml(lobbyBalance('holdem'))}
+          <span class="tile-cta">S'asseoir</span>
+        </a>
+        <a class="tile tile-roulette" href="#/roulette">
+          <span class="tile-suits" aria-hidden="true">◉ 0</span>
+          <h2>Roulette</h2>
+          <p>Cylindre européen à un zéro · pleins 35:1, chevaux, carrés, sixains · chances simples</p>
+          ${balanceHtml(lobbyBalance('roulette'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
       </div>
@@ -98,7 +107,7 @@ function mountLobby(root: HTMLElement): Unmount {
   }
 
   setCheatTarget({
-    games: ['blackjack', 'holdem'],
+    games: ['blackjack', 'holdem', 'roulette'],
     getBalance: lobbyBalance,
     setBalance: (game, amount) => {
       saveBalance(game, amount);
@@ -127,6 +136,9 @@ function route(): void {
       break;
     case '#/holdem':
       unmount = mountHoldem(app);
+      break;
+    case '#/roulette':
+      unmount = mountRoulette(app);
       break;
     default:
       unmount = mountLobby(app);
