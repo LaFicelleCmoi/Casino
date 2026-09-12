@@ -45,6 +45,9 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
 .tile-suits { font-size: 44px; }
 .tile h2 { font-size: 34px; }
 .tile p { color: rgba(244, 239, 226, 0.82); margin: 0; line-height: 1.5; }
+.tile-balance { margin-top: auto; font-size: 15px; color: rgba(244, 239, 226, 0.9); }
+.tile-balance strong { color: var(--gold); font-size: 18px; font-variant-numeric: tabular-nums; }
+.tile-balance + .tile-cta { margin-top: 6px; }
 .tile-cta { margin-top: auto; align-self: flex-start; padding: 10px 18px; border-radius: 999px; background: var(--gold); color: #1a1405; font-weight: 700; }
 .lobby-footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 
