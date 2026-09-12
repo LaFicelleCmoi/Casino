@@ -14,6 +14,7 @@ import {
   type Ledger,
 } from './money-ledger.js';
 import { mountRoulette } from './roulette-view.js';
+import { mountScratch } from './scratch-view.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -47,6 +48,7 @@ function ledgerHtml(ledger: Ledger): string {
           ${ledgerRow('Blackjack', ledger.blackjack)}
           ${ledgerRow("Texas Hold'em", ledger.holdem)}
           ${ledgerRow('Roulette', ledger.roulette)}
+          ${ledgerRow('Tickets à gratter', ledger.grattage)}
           ${ledgerRow('Total', totalOf(ledger), true)}
         </tbody>
       </table>
@@ -66,7 +68,7 @@ function lobbyHtml(): string {
       <header class="lobby-header">
         <p class="eyebrow">Casino Engine</p>
         <h1>Choisissez votre table</h1>
-        <p class="lede">Trois moteurs de jeu en TypeScript : state machine stricte, mélange cryptographique, projection anti-triche.</p>
+        <p class="lede">Tables de casino et tickets à gratter, propulsés par des moteurs TypeScript : state machine stricte, tirage cryptographique, projection anti-triche.</p>
       </header>
       <div class="tiles">
         <a class="tile tile-blackjack" href="#/blackjack">
@@ -90,6 +92,13 @@ function lobbyHtml(): string {
           ${balanceHtml(lobbyBalance('roulette'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
+        <a class="tile tile-scratch" href="#/grattage">
+          <span class="tile-suits" aria-hidden="true">✦ ✧</span>
+          <h2>Tickets à gratter</h2>
+          <p>10 jeux instantanés · Banco, Cash, Morpion, Millionnaire, Vegas, Mots Croisés, Astro, Pole Position Jackpot</p>
+          ${balanceHtml(lobbyBalance('grattage'))}
+          <span class="tile-cta">Gratter</span>
+        </a>
       </div>
       <section class="ledger">${ledgerHtml(loadLedger())}</section>
       <footer class="lobby-footer">Jetons fictifs uniquement : aucun argent réel n'est en jeu.</footer>
@@ -107,7 +116,7 @@ function mountLobby(root: HTMLElement): Unmount {
   }
 
   setCheatTarget({
-    games: ['blackjack', 'holdem', 'roulette'],
+    games: ['blackjack', 'holdem', 'roulette', 'grattage'],
     getBalance: lobbyBalance,
     setBalance: (game, amount) => {
       saveBalance(game, amount);
@@ -139,6 +148,9 @@ function route(): void {
       break;
     case '#/roulette':
       unmount = mountRoulette(app);
+      break;
+    case '#/grattage':
+      unmount = mountScratch(app);
       break;
     default:
       unmount = mountLobby(app);
