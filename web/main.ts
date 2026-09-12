@@ -15,6 +15,8 @@ import {
 } from './money-ledger.js';
 import { mountRoulette } from './roulette-view.js';
 import { mountScratch } from './scratch-view.js';
+import { mountRacing } from './racing-view.js';
+import { mountPlinko } from './plinko-view.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -49,6 +51,8 @@ function ledgerHtml(ledger: Ledger): string {
           ${ledgerRow("Texas Hold'em", ledger.holdem)}
           ${ledgerRow('Roulette', ledger.roulette)}
           ${ledgerRow('Tickets à gratter', ledger.grattage)}
+          ${ledgerRow('Courses hippiques', ledger.courses)}
+          ${ledgerRow('Plinko', ledger.plinko)}
           ${ledgerRow('Total', totalOf(ledger), true)}
         </tbody>
       </table>
@@ -99,6 +103,20 @@ function lobbyHtml(): string {
           ${balanceHtml(lobbyBalance('grattage'))}
           <span class="tile-cta">Gratter</span>
         </a>
+        <a class="tile tile-racing" href="#/courses">
+          <span class="tile-suits" aria-hidden="true">🐎 ⏱️</span>
+          <h2>Courses Hippiques</h2>
+          <p>Courses virtuelles 3D · Simple Gagnant / Placé · Tiercé &amp; Quinté</p>
+          ${balanceHtml(lobbyBalance('courses'))}
+          <span class="tile-cta">Parier</span>
+        </a>
+        <a class="tile tile-plinko" href="#/plinko">
+          <span class="tile-suits" aria-hidden="true">🔺 💰</span>
+          <h2>Plinko</h2>
+          <p>Pyramide à 16 rangées · Volatilité ajustable · Chutes simultanées · Multiplicateurs extrêmes</p>
+          ${balanceHtml(lobbyBalance('plinko'))}
+          <span class="tile-cta">Lâcher</span>
+        </a>
       </div>
       <section class="ledger">${ledgerHtml(loadLedger())}</section>
       <footer class="lobby-footer">Jetons fictifs uniquement : aucun argent réel n'est en jeu.</footer>
@@ -116,7 +134,7 @@ function mountLobby(root: HTMLElement): Unmount {
   }
 
   setCheatTarget({
-    games: ['blackjack', 'holdem', 'roulette', 'grattage'],
+    games: ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko'],
     getBalance: lobbyBalance,
     setBalance: (game, amount) => {
       saveBalance(game, amount);
@@ -151,6 +169,12 @@ function route(): void {
       break;
     case '#/grattage':
       unmount = mountScratch(app);
+      break;
+    case '#/courses':
+      unmount = mountRacing(app);
+      break;
+    case '#/plinko':
+      unmount = mountPlinko(app);
       break;
     default:
       unmount = mountLobby(app);
