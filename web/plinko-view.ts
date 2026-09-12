@@ -12,9 +12,19 @@ import {
   type Volatility,
 } from '../src/plinko/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { PlinkoBoard } from './plinko-board.js';
-import { expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+  syncRefillButton,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -67,7 +77,7 @@ class PlinkoRandom implements RandomSource {
 export function mountPlinko(root: HTMLElement): () => void {
   const rng = new PlinkoRandom(new CryptoRandomSource());
   const controller = new PlinkoController(rng);
-  let state: PlinkoState = expectOk(controller.createSession(PLAYER, startingBalance('plinko', RULES.minStake)));
+  let state: PlinkoState = expectOk(controller.createSession(PLAYER, startingBalance('plinko')));
   let stake = 10;
   let message = 'Choisissez votre mise et la volatilité, puis lâchez les billes.';
   let tone: Tone = 'info';
@@ -103,7 +113,7 @@ export function mountPlinko(root: HTMLElement): () => void {
           <p class="pk-rtp" data-rtp></p>
           <button class="btn primary pk-drop" data-action="DROP">Lâcher <kbd>Espace</kbd></button>
           <button class="btn" data-action="BURST">Lâcher ×${BURST}</button>
-          <button class="btn ghost" data-action="REBUY" hidden>Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>
+          ${refillButtonHtml('plinko', 'ghost', 'hidden')}
           <p class="message pk-message" data-message aria-live="polite"></p>
         </aside>
         <section class="pk-stage" data-stage>
@@ -151,6 +161,7 @@ export function mountPlinko(root: HTMLElement): () => void {
     const maxMultiplier = Math.max(...MULTIPLIERS[state.volatility]);
     rtpEl.textContent = `Retour théorique ${(returnToPlayer(state.volatility) * 100).toFixed(1).replace('.', ',')} % · jusqu’à ×${formatMultiplier(maxMultiplier)}`;
     rebuyEl.hidden = state.player.bankroll >= RULES.minStake || locked;
+    syncRefillButton(rebuyEl, 'plinko');
     stageEl.classList.toggle('pk-gravity', gravity);
     historyEl.innerHTML = history
       .map((entry) => `<span class="pk-chip ${entry.multiplier >= 100 ? 'is-win' : 'is-loss'} ${entry.heavy ? 'is-heavy' : ''}">×${formatMultiplier(entry.multiplier)}</span>`)
@@ -229,9 +240,13 @@ export function mountPlinko(root: HTMLElement): () => void {
         burst();
         break;
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        board.setMultipliers(MULTIPLIERS[state.volatility]);
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons.`, 'info'];
+        if (claimDailyRefill('plinko')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          board.setMultipliers(MULTIPLIERS[state.volatility]);
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         render();
         break;
     }
