@@ -9,6 +9,7 @@ import {
   type PlacedBet,
   type RouletteCommand,
   type RouletteResultPhase,
+  type RouletteRules,
   type RouletteSeat,
   type RouletteState,
   type SpinOutcome,
@@ -23,7 +24,9 @@ type Tone = 'info' | 'win' | 'loss' | 'error';
 const PLAYER: PlayerId = playerId('vous');
 const SEAT = 0;
 const BUY_IN = DEFAULT_BALANCE;
-const RULES = STANDARD_ROULETTE_RULES;
+/** Plafonds relevés pour permettre le tapis : seule reste la limite des entiers exacts (mise × 36 sur un plein). */
+const MAX_STAKE = Math.floor(Number.MAX_SAFE_INTEGER / 36);
+const RULES: RouletteRules = { ...STANDARD_ROULETTE_RULES, maxBetPerPosition: chips(MAX_STAKE), maxTotalBet: chips(MAX_STAKE) };
 const CHIP_VALUES = [1, 5, 25, 100, 500] as const;
 const SPIN_MS = 5_000;
 const COLOR_LABELS = { GREEN: 'vert', RED: 'rouge', BLACK: 'noir' } as const;
@@ -59,9 +62,9 @@ function outcomeText(outcome: SpinOutcome): string {
 }
 
 function compactChips(amount: number): string {
-  if (amount < 1_000) return String(amount);
-  const thousands = amount / 1_000;
-  return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+  const [unit, divisor] = amount >= 1_000_000 ? ['M', 1_000_000] : amount >= 1_000 ? ['k', 1_000] : ['', 1];
+  const scaled = amount / divisor;
+  return `${Number.isInteger(scaled) || scaled >= 100 ? Math.floor(scaled) : scaled.toFixed(1)}${unit}`;
 }
 
 const totalOf = (bets: readonly PlacedBet[]): number => bets.reduce((sum, bet) => sum + bet.amount, 0);
@@ -82,7 +85,8 @@ export function mountRoulette(root: HTMLElement): () => void {
   let state = newTable(startingBalance('roulette', RULES.minBet));
   let message = 'Faites vos jeux : choisissez un jeton, puis cliquez sur le tapis.';
   let tone: Tone = 'info';
-  let chipValue: number = 5;
+  /** Valeur du jeton sélectionné, ou tout le solde avec le jeton All-in. */
+  let chipValue: number | 'ALL_IN' = 5;
   let revealing = false;
   let rotation = 0;
   /** Mises du dernier tour, pour « Rejouer la mise ». */
@@ -114,7 +118,7 @@ export function mountRoulette(root: HTMLElement): () => void {
           </div>
         </div>
         <div class="rl-layout-scroll"><div class="rl-layout" data-layout>${layoutHtml(catalog)}</div></div>
-        <p class="rl-hint">Clic : poser un jeton · clic droit : retirer une position · visez les lignes et les coins pour jouer à cheval</p>
+        <p class="rl-hint">Clic : poser un jeton · clic droit : retirer une position · lignes et coins pour jouer à cheval · jeton All-in : tout votre solde sur une position</p>
       </section>
       <nav class="controls" data-controls></nav>
     </div>`;
@@ -147,9 +151,12 @@ export function mountRoulette(root: HTMLElement): () => void {
   function placeChip(betId: string): void {
     const bet = catalog.get(betId as BetId);
     if (bet === undefined || !canBet()) return;
-    if (apply({ type: 'PLACE_BET', playerId: PLAYER, bet: selectionOf(bet), amount: chips(chipValue) })) {
-      message = `${formatChips(chipValue)} sur ${bet.label}`;
-      tone = 'info';
+    const allIn = chipValue === 'ALL_IN';
+    const amount = chipValue === 'ALL_IN' ? (seatOf()?.bankroll ?? 0) : chipValue;
+    if (amount === 0) {
+      [message, tone] = ['Plus aucun jeton à miser : lancez la bille ou effacez le tapis.', 'error'];
+    } else if (apply({ type: 'PLACE_BET', playerId: PLAYER, bet: selectionOf(bet), amount: chips(amount) })) {
+      [message, tone] = [allIn ? `All-in ! ${formatChips(amount)} jetons sur ${bet.label}` : `${formatChips(amount)} sur ${bet.label}`, 'info'];
     }
     render();
   }
@@ -259,8 +266,12 @@ export function mountRoulette(root: HTMLElement): () => void {
         `<button class="chip chip-${value} ${value === chipValue ? 'selected' : ''}" data-action="CHIP" data-value="${value}" ` +
         `aria-pressed="${value === chipValue}" aria-label="Jeton de ${value}">${value}</button>`,
     ).join('');
+    const allInSelected = chipValue === 'ALL_IN';
+    const allInChip =
+      `<button class="chip chip-all-in ${allInSelected ? 'selected' : ''}" data-action="CHIP" data-value="ALL_IN" ` +
+      `aria-pressed="${allInSelected}" aria-label="All-in : miser tout le solde sur une position" title="Tout votre solde sur la prochaine position cliquée">All-in</button>`;
     const canReplay = staked === 0 && lastBets.length > 0 && totalOf(lastBets) <= seat.bankroll;
-    return `<div class="chip-rack">${rack}</div>
+    return `<div class="chip-rack">${rack}${allInChip}</div>
       <span class="rl-total">Mise totale <strong>${formatChips(staked)}</strong></span>
       ${button('CLEAR_BETS', 'Effacer', staked > 0, 'ghost')}
       ${button('REPLAY_BETTING', 'Rejouer la mise', canReplay, 'ghost')}
@@ -320,7 +331,7 @@ export function mountRoulette(root: HTMLElement): () => void {
     if (button === null || button.disabled) return;
     switch (button.dataset['action']) {
       case 'CHIP':
-        chipValue = Number(button.dataset['value']);
+        chipValue = button.dataset['value'] === 'ALL_IN' ? 'ALL_IN' : Number(button.dataset['value']);
         render();
         break;
       case 'CLEAR_BETS':
