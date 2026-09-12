@@ -1,9 +1,22 @@
-import { ZERO_CHIPS, chips, type Chips, type RandomSource } from '../core/index.js';
+import { ZERO_CHIPS, chips, invariant, type Chips, type RandomSource } from '../core/index.js';
 import type { PrizeTable } from './types/ticket.js';
 
 /** prizeTable(7_589, [[1, 1_200], [2, 800]]) : poids de la défaite, puis paliers [montant, poids]. */
 export function prizeTable(loseWeight: number, tiers: readonly (readonly [amount: number, weight: number])[]): PrizeTable {
   return { loseWeight, tiers: tiers.map(([amount, weight]) => ({ amount: chips(amount), weight })) };
+}
+
+/**
+ * Tableau de lots d'un règlement : par bloc de `blockSize` tickets, [nombre de lots, montant].
+ * Les tickets restants sont perdants ; tirer un ticket revient à tirer une ligne du bloc.
+ */
+export function lotTable(blockSize: number, lots: readonly (readonly [count: number, amount: number])[]): PrizeTable {
+  const winners = lots.reduce((sum, [count]) => sum + count, 0);
+  invariant(winners <= blockSize, `Plus de lots (${winners}) que de tickets (${blockSize})`);
+  return prizeTable(
+    blockSize - winners,
+    lots.map(([count, amount]) => [amount, count] as const),
+  );
 }
 
 export function totalWeight(table: PrizeTable): number {
