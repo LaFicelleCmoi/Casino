@@ -12,6 +12,8 @@ export interface CheatTarget {
   refresh(): void;
   /** Décrit les prochaines cartes ; absent hors d'une table. */
   foresee?(): string;
+  /** Codes propres à un écran (ex : DRSZONE) : message si le code est reconnu, null sinon. */
+  runCode?(code: string): string | null;
 }
 
 type Tone = 'cmd' | 'ok' | 'error' | 'info';
@@ -23,17 +25,25 @@ const GAME_ALIASES: Readonly<Record<string, GameKey>> = {
   holdem: 'holdem',
   poker: 'holdem',
   roulette: 'roulette',
+  grattage: 'grattage',
+  tickets: 'grattage',
 };
-const GAME_LABELS: Readonly<Record<GameKey, string>> = { blackjack: 'Blackjack', holdem: "Hold'em", roulette: 'Roulette' };
+const GAME_LABELS: Readonly<Record<GameKey, string>> = {
+  blackjack: 'Blackjack',
+  holdem: "Hold'em",
+  roulette: 'Roulette',
+  grattage: 'Tickets à gratter',
+};
 
 const HELP = [
   'aide                         liste des codes',
-  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem ou roulette)',
+  'argent <montant> [jeu]       fixe le solde (jeu : bj, holdem, roulette ou grattage)',
   'ajouter <montant> [jeu]      ajoute des jetons (négatif pour en retirer)',
   'motherlode [jeu]             +50 000 jetons',
   'rosebud [jeu]                +1 000 jetons',
-  'rayons-x                     montre les cartes cachées (croupier, adversaires)',
-  'voyance                      annonce les prochaines cartes ou le prochain numéro de la roulette',
+  'rayons-x                     montre les cartes cachées et rend la pellicule des tickets translucide',
+  'voyance                      annonce les prochaines cartes, le prochain numéro ou le gain d’un ticket',
+  'drszone / v12turbo           Pole Position Jackpot : gomme brûlée et chrono imbattable',
   'effacer                      vide la console',
   'Touche ² (ou `) pour ouvrir ou fermer, Échap pour fermer.',
 ];
@@ -102,7 +112,7 @@ export function mountCheatConsole(): void {
     let games: readonly GameKey[] = screen.games;
     if (gameArg !== undefined) {
       const game = GAME_ALIASES[gameArg.toLowerCase()];
-      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem ou roulette).`, 'error');
+      if (game === undefined) return print(`Jeu inconnu : ${gameArg} (bj, holdem, roulette ou grattage).`, 'error');
       if (!games.includes(game)) return print(`Le solde ${GAME_LABELS[game]} se modifie depuis le lobby ou sa table.`, 'error');
       games = [game];
     }
@@ -124,14 +134,14 @@ export function mountCheatConsole(): void {
       case 'argent':
       case 'money': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : argent <montant> [bj|holdem|roulette]', 'error');
+        if (amount === null) return print('Usage : argent <montant> [bj|holdem|roulette|grattage]', 'error');
         changeBalance(args[1], () => amount);
         break;
       }
       case 'ajouter':
       case 'add': {
         const amount = parseAmount(args[0]);
-        if (amount === null) return print('Usage : ajouter <montant> [bj|holdem|roulette]', 'error');
+        if (amount === null) return print('Usage : ajouter <montant> [bj|holdem|roulette|grattage]', 'error');
         changeBalance(args[1], (current) => current + amount);
         break;
       }
@@ -156,8 +166,11 @@ export function mountCheatConsole(): void {
       case 'clear':
         output.replaceChildren();
         break;
-      default:
-        print(`Code inconnu : ${name}. Tapez « aide ».`, 'error');
+      default: {
+        const answer = target?.runCode?.(name.toLowerCase()) ?? null;
+        if (answer === null) print(`Code inconnu : ${name}. Tapez « aide ».`, 'error');
+        else print(answer, 'ok');
+      }
     }
   }
 
