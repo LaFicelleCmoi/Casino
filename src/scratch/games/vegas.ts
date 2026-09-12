@@ -1,12 +1,16 @@
 import { chips, shuffle, type RandomSource } from '../../core/index.js';
-import { prizeTable } from '../prizes.js';
+import { lotTable } from '../prizes.js';
 import type { ScratchGameDefinition, ScratchZone } from '../types/ticket.js';
 import {
   amountCell,
+  chooseDecomposition,
+  decoyAmount,
   firstCell,
   group,
   groupById,
+  partsFor,
   pick,
+  randomInt,
   range,
   sample,
   sampleWithCap,
@@ -15,118 +19,159 @@ import {
   zoneById,
   zoneResult,
   type CellData,
+  type PrizeSlot,
 } from './helpers.js';
 
-const ROULETTE_AMOUNTS = [5, 10, 20, 50, 100, 500];
-const CRAPS_AMOUNTS = [5, 10, 20, 50, 100];
-const JACKPOT_AMOUNTS = [50, 100, 500, 5_000];
+const AMOUNTS = [3, 6, 9, 15, 50, 100, 1_000, 50_000];
+const SLOTS: readonly PrizeSlot[] = [
+  { id: 'roulette', capacity: 3, amounts: AMOUNTS },
+  { id: 'jackpot', capacity: 3, amounts: AMOUNTS },
+  { id: 'duel', capacity: 1, amounts: AMOUNTS },
+  { id: 'craps', capacity: 1, amounts: AMOUNTS },
+  { id: 'bonus', capacity: 1, amounts: AMOUNTS },
+];
+/** Numéros de la roulette selon le règlement : de 1 à 36, sauf 3, 6, 9 et 15. */
+export const VEGAS_NUMBERS = range(1, 36).filter((n) => ![3, 6, 9, 15].includes(n));
+export const CARD_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'V', 'D', 'R', 'AS'] as const;
 export const DICE_FACES = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'] as const;
 const REELS = [
-  ['SEPT', '7'],
+  ['SEPT', '7️⃣'],
   ['CERISE', '🍒'],
   ['CLOCHE', '🔔'],
   ['BAR', 'BAR'],
   ['DIAMANT', '💎'],
+  ['CITRON', '🍋'],
 ] as const;
-
 const DICE_PAIRS = range(1, 6).flatMap((a) => range(1, 6).map((b) => [a, b] as const));
-const isNatural = ([a, b]: readonly [number, number]): boolean => a + b === 7 || a + b === 11;
 
-const ZONE_IDS = ['roulette', 'craps', 'jackpot'] as const;
-type VegasZone = (typeof ZONE_IDS)[number];
-const PAYABLE: Readonly<Record<VegasZone, readonly number[]>> = {
-  roulette: ROULETTE_AMOUNTS,
-  craps: CRAPS_AMOUNTS,
-  jackpot: JACKPOT_AMOUNTS,
-};
+const cardCell = (rank: number): CellData => ({ symbol: 'CARTE', label: CARD_RANKS[rank] ?? '?', value: rank });
 
-function rouletteZone(rng: RandomSource, win: number): ScratchZone {
-  const winning = rng.nextInt(37);
-  const yours: CellData[] = sample(rng, range(0, 36).filter((n) => n !== winning), win > 0 ? 4 : 5).map((n) => ({
-    symbol: 'NUMBER',
-    label: String(n),
-    value: n,
-    amount: pick(rng, ROULETTE_AMOUNTS),
-  }));
-  if (win > 0) yours.push({ symbol: 'NUMBER', label: String(winning), value: winning, amount: win });
-  return zone('roulette', 'Zone Roulette', 'Un de vos numéros est le numéro sorti : vous gagnez sa mise.', [
-    group('roulette', 'numero', 'Numéro sorti', 1, [{ symbol: 'WINNING_NUMBER', label: String(winning), value: winning }]),
-    group('roulette', 'mises', 'Vos numéros', 5, shuffle(yours, rng)),
+function rouletteZone(rng: RandomSource, wins: readonly number[]): ScratchZone {
+  const winning = sample(rng, VEGAS_NUMBERS, 4);
+  const hits = sample(rng, winning, wins.length);
+  const misses = sample(rng, VEGAS_NUMBERS.filter((n) => !winning.includes(n)), 3 - wins.length);
+  const chipsOnTable = shuffle(
+    [
+      ...hits.map((n, index): CellData => ({ symbol: 'NUMBER', label: String(n), value: n, amount: wins[index] ?? 0 })),
+      ...misses.map((n): CellData => ({ symbol: 'NUMBER', label: String(n), value: n, amount: decoyAmount(rng, AMOUNTS) })),
+    ],
+    rng,
+  );
+  return zone('roulette', 'Roulette', 'Un numéro sous vos jetons est un numéro gagnant : vous remportez la somme associée ; les gains se cumulent.', [
+    group('roulette', 'gagnants', 'Numéros gagnants', 4, winning.map((n) => ({ symbol: 'WINNING_NUMBER', label: String(n), value: n }))),
+    group('roulette', 'mises', 'Vos mises', 3, chipsOnTable),
   ]);
 }
 
-function crapsZone(rng: RandomSource, win: number): ScratchZone {
-  const dice = pick(rng, DICE_PAIRS.filter((pair) => isNatural(pair) === win > 0));
-  return zone('craps', 'Zone Craps', 'Les dés font 7 ou 11 : vous gagnez le montant de la case Gain.', [
-    group('craps', 'des', 'Lancer de dés', 2, dice.map((face) => ({ symbol: 'DIE', label: DICE_FACES[face - 1] ?? '?', value: face }))),
-    group('craps', 'gain', 'Gain', 1, [amountCell(win > 0 ? win : pick(rng, CRAPS_AMOUNTS))]),
-  ]);
+function jackpotZone(rng: RandomSource, wins: readonly number[]): ScratchZone {
+  const winners = sample(rng, range(0, 2), wins.length);
+  const lines = range(0, 2).map((index) => {
+    const win = wins[winners.indexOf(index)];
+    let reels: (typeof REELS)[number][];
+    if (win !== undefined) {
+      const symbol = pick(rng, REELS);
+      reels = [symbol, symbol, symbol];
+    } else {
+      reels = sampleWithCap(rng, REELS, 2, 3);
+    }
+    return group('jackpot', `ligne-${index + 1}`, `Ligne ${index + 1}`, 4, [
+      ...reels.map(([symbol, label]) => ({ symbol, label })),
+      amountCell(win ?? decoyAmount(rng, AMOUNTS)),
+    ]);
+  });
+  return zone('jackpot', 'Jackpot', 'Trois symboles identiques sur une même ligne : vous remportez la somme de cette ligne.', lines);
 }
 
-function jackpotZone(rng: RandomSource, win: number): ScratchZone {
-  let reels: (typeof REELS)[number][];
-  if (win > 0) {
-    const symbol = pick(rng, REELS);
-    reels = [symbol, symbol, symbol];
+function duelZone(rng: RandomSource, win: number | undefined): ScratchZone {
+  let bank: number;
+  let cards: number[];
+  if (win !== undefined) {
+    bank = randomInt(rng, 0, CARD_RANKS.length - 2);
+    cards = shuffle([randomInt(rng, bank + 1, CARD_RANKS.length - 1), randomInt(rng, 0, CARD_RANKS.length - 1), randomInt(rng, 0, CARD_RANKS.length - 1)], rng);
   } else {
-    reels = sampleWithCap(rng, REELS, 2, 3);
+    bank = randomInt(rng, 2, CARD_RANKS.length - 1);
+    cards = [0, 1, 2].map(() => randomInt(rng, 0, bank));
   }
-  return zone('jackpot', 'Zone Jackpot', 'Trois symboles identiques sur les rouleaux : jackpot !', [
-    group('jackpot', 'rouleaux', 'Les rouleaux', 3, reels.map(([symbol, label]) => ({ symbol, label }))),
-    group('jackpot', 'gain', 'Jackpot', 1, [amountCell(win > 0 ? win : pick(rng, JACKPOT_AMOUNTS))]),
+  return zone('duel', 'Duel', 'Une de vos cartes est plus forte que celle de la Banque : vous remportez le GAIN.', [
+    group('duel', 'banque', 'Banque', 1, [cardCell(bank)]),
+    group('duel', 'cartes', 'Vos cartes', 3, cards.map(cardCell)),
+    group('duel', 'gain', 'GAIN', 1, [amountCell(win ?? decoyAmount(rng, AMOUNTS))]),
   ]);
 }
 
-/** Roulette, craps et machine à sous sur un même ticket. */
+function crapsZone(rng: RandomSource, win: number | undefined): ScratchZone {
+  const dice = pick(rng, DICE_PAIRS.filter(([a, b]) => (a + b === 7) === (win !== undefined)));
+  return zone('craps', 'Craps', 'Les deux dés totalisent 7 : vous remportez le GAIN.', [
+    group('craps', 'des', 'Les dés', 2, dice.map((face) => ({ symbol: 'DIE', label: DICE_FACES[face - 1] ?? '?', value: face }))),
+    group('craps', 'gain', 'GAIN', 1, [amountCell(win ?? decoyAmount(rng, AMOUNTS))]),
+  ]);
+}
+
+/** Vegas, d'après le règlement FDJ : 5 jeux indépendants (Roulette, Jackpot, Duel, Craps, Bonus) aux gains cumulables. */
 export const VEGAS: ScratchGameDefinition = {
   type: 'VEGAS',
   name: 'Vegas',
-  tagline: 'L’esprit casino · zone Roulette, zone Craps et Jackpot à gratter',
-  price: chips(5),
+  tagline: '5 jeux : Roulette, Jackpot, Duel, Craps et Bonus · jusqu’à 50 000',
+  price: chips(3),
   serialPrefix: 'VGS',
-  prizes: prizeTable(775_570, [
-    [5, 120_000],
-    [10, 60_000],
-    [20, 30_000],
-    [50, 10_000],
-    [100, 4_000],
-    [500, 400],
-    [5_000, 30],
+  prizes: lotTable(2_000_000, [
+    [2, 50_000],
+    [20, 1_000],
+    [300, 100],
+    [14_400, 50],
+    [50_000, 15],
+    [100_000, 9],
+    [200_000, 6],
+    [160_000, 3],
   ]),
 
   generate(rng, prize) {
-    const winner = prize > 0 ? pick(rng, ZONE_IDS.filter((id) => PAYABLE[id].includes(prize))) : null;
-    const winFor = (id: VegasZone): number => (winner === id ? prize : 0);
-    return [rouletteZone(rng, winFor('roulette')), crapsZone(rng, winFor('craps')), jackpotZone(rng, winFor('jackpot'))];
+    const parts = chooseDecomposition(rng, prize, SLOTS, 3);
+    return [
+      rouletteZone(rng, partsFor(parts, 'roulette')),
+      jackpotZone(rng, partsFor(parts, 'jackpot')),
+      duelZone(rng, partsFor(parts, 'duel')[0]),
+      crapsZone(rng, partsFor(parts, 'craps')[0]),
+      zone('bonus', 'Bonus', 'Une somme autre que 0 sous le Bonus : elle est à vous.', [
+        group('bonus', 'bonus', 'BONUS', 1, [amountCell(partsFor(parts, 'bonus')[0] ?? 0)]),
+      ]),
+    ];
   },
 
   evaluate(zones) {
     const roulette = zoneById(zones, 'roulette');
-    const drawn = firstCell(roulette, 'numero');
-    const hits = groupById(roulette, 'mises').cells.filter((cell) => cell.value === drawn.value);
+    const winning = new Set(groupById(roulette, 'gagnants').cells.map((cell) => cell.value));
+    const hits = groupById(roulette, 'mises').cells.filter((cell) => winning.has(cell.value));
     const rouletteWin = hits.reduce((sum, cell) => sum + (cell.amount ?? 0), 0);
 
-    const craps = zoneById(zones, 'craps');
-    const [first, second] = groupById(craps, 'des').cells;
-    const total = (first?.value ?? 0) + (second?.value ?? 0);
-    const crapsGain = firstCell(craps, 'gain');
-    const natural = total === 7 || total === 11;
-
     const jackpot = zoneById(zones, 'jackpot');
-    const reels = groupById(jackpot, 'rouleaux').cells;
-    const aligned = reels.length === 3 && reels.every((cell) => cell.symbol === reels[0]?.symbol);
-    const jackpotGain = firstCell(jackpot, 'gain');
+    const lines = jackpot.groups.filter((line) => {
+      const reels = line.cells.filter((cell) => cell.symbol !== 'AMOUNT');
+      return reels.length === 3 && reels.every((cell) => cell.symbol === reels[0]?.symbol);
+    });
+    const jackpotWin = lines.reduce((sum, line) => sum + (line.cells.find((cell) => cell.symbol === 'AMOUNT')?.amount ?? 0), 0);
+
+    const duel = zoneById(zones, 'duel');
+    const bank = firstCell(duel, 'banque');
+    const stronger = groupById(duel, 'cartes').cells.filter((cell) => (cell.value ?? 0) > (bank.value ?? 0));
+    const duelGain = firstCell(duel, 'gain');
+    const duelWin = stronger.length > 0 ? (duelGain.amount ?? 0) : 0;
+
+    const craps = zoneById(zones, 'craps');
+    const dice = groupById(craps, 'des').cells;
+    const total = dice.reduce((sum, cell) => sum + (cell.value ?? 0), 0);
+    const crapsGain = firstCell(craps, 'gain');
+    const crapsWin = total === 7 ? (crapsGain.amount ?? 0) : 0;
+
+    const bonus = firstCell(zoneById(zones, 'bonus'), 'bonus');
+    const bonusWin = bonus.amount ?? 0;
 
     return ticketEvaluation([
-      rouletteWin > 0
-        ? zoneResult('roulette', rouletteWin, `Le ${drawn.label} est sorti`, [drawn.id, ...hits.map((cell) => cell.id)])
-        : zoneResult('roulette', 0, `Le ${drawn.label} n’est pas à vous`),
-      natural && crapsGain.amount !== null && first !== undefined && second !== undefined
-        ? zoneResult('craps', crapsGain.amount, `Total ${total} : naturel !`, [first.id, second.id, crapsGain.id])
-        : zoneResult('craps', 0, `Total ${total}`),
-      aligned && jackpotGain.amount !== null
-        ? zoneResult('jackpot', jackpotGain.amount, 'Trois symboles alignés', [...reels.map((cell) => cell.id), jackpotGain.id])
-        : zoneResult('jackpot', 0, 'Rouleaux dépareillés'),
+      zoneResult('roulette', rouletteWin, rouletteWin > 0 ? `${hits.length} mise${hits.length > 1 ? 's' : ''} gagnante${hits.length > 1 ? 's' : ''}` : 'Aucun numéro gagnant', hits.map((cell) => cell.id)),
+      zoneResult('jackpot', jackpotWin, jackpotWin > 0 ? 'Trois symboles alignés' : 'Aucune ligne complète', lines.flatMap((line) => line.cells.map((cell) => cell.id))),
+      zoneResult('duel', duelWin, duelWin > 0 ? `Vous battez la Banque (${bank.label})` : `La Banque (${bank.label}) l’emporte`, duelWin > 0 ? [...stronger.map((cell) => cell.id), duelGain.id] : []),
+      zoneResult('craps', crapsWin, `Total des dés : ${total}`, crapsWin > 0 ? [...dice.map((cell) => cell.id), crapsGain.id] : []),
+      zoneResult('bonus', bonusWin, bonusWin > 0 ? 'Bonus gagnant' : 'Bonus à 0', bonusWin > 0 ? [bonus.id] : []),
     ]);
   },
 };
