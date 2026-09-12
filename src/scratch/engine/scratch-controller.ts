@@ -27,8 +27,9 @@ function done(state: ScratchState, events: readonly ScratchEvent[] = []): Step {
   return ok({ state, events });
 }
 
+/** Cases à gratter du ticket, hors éléments imprimés à découvert. */
 export function ticketCellIds(ticket: Pick<Ticket, 'zones'>): string[] {
-  return ticket.zones.flatMap((zone) => zone.groups.flatMap((group) => group.cells.map((cell) => cell.id)));
+  return ticket.zones.flatMap((zone) => zone.groups.filter((group) => !group.printed).flatMap((group) => group.cells.map((cell) => cell.id)));
 }
 
 /**
@@ -169,7 +170,9 @@ function projectTicket(ticket: Ticket, revealed: boolean): TicketView {
       ...zone,
       groups: zone.groups.map((group) => ({
         ...group,
-        cells: group.cells.map((cell): VisibleScratchCell => (scratched.has(cell.id) ? { ...cell, scratched: true } : { id: cell.id, scratched: false })),
+        cells: group.cells.map(
+          (cell): VisibleScratchCell => (group.printed || scratched.has(cell.id) ? { ...cell, scratched: true } : { id: cell.id, scratched: false }),
+        ),
       })),
     })),
     scratchedCount: scratched.size,
