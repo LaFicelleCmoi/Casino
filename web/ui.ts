@@ -42,6 +42,8 @@ interface CardOptions {
   readonly animate?: boolean;
   readonly delay?: number;
   readonly small?: boolean;
+  /** Carte normalement cachée, dévoilée par le code « rayons-x ». */
+  readonly xray?: boolean;
 }
 
 /** `null` = carte face cachée. */
@@ -49,6 +51,7 @@ export function cardHtml(card: Card | null, options: CardOptions = {}): string {
   const classes = ['card'];
   if (options.small) classes.push('card-sm');
   if (options.animate) classes.push('deal');
+  if (options.xray) classes.push('xray');
   const style = options.animate ? ` style="animation-delay:${options.delay ?? 0}ms"` : '';
 
   if (card === null) {
@@ -73,11 +76,11 @@ export class DealAnimator {
     this.#queued = 0;
   }
 
-  card(key: string, card: Card | null, small = false): string {
+  card(key: string, card: Card | null, small = false, xray = false): string {
     const isNew = !this.#seen.has(key);
     this.#seen.add(key);
     const delay = isNew ? Math.min(this.#queued++, 8) * 110 : 0;
-    return cardHtml(card, { animate: isNew, delay, small });
+    return cardHtml(card, { animate: isNew, delay, small, xray });
   }
 }
 
