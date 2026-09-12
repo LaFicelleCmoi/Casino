@@ -20,10 +20,20 @@ import {
   type TicketTypeId,
 } from '../src/scratch/index.js';
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
-import { DEFAULT_BALANCE, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
 import { burnout, playTireScreech } from './scratch-effects.js';
 import { ScratchSurface, TICKET_THEMES, lotsHtml, markLetter, showEvaluation, ticketHtml } from './scratch-ticket.js';
-import { escapeHtml, expectOk, formatChips, formatSigned, queryIn, signClass } from './ui.js';
+import {
+  REFILL_DONE_MESSAGE,
+  REFILL_USED_MESSAGE,
+  escapeHtml,
+  expectOk,
+  formatChips,
+  formatSigned,
+  queryIn,
+  refillButtonHtml,
+  signClass,
+} from './ui.js';
 
 type Tone = 'info' | 'win' | 'loss' | 'error';
 
@@ -56,7 +66,7 @@ const cellsOfTicket = (ticket: Ticket): ScratchCell[] =>
 
 export function mountScratch(root: HTMLElement): () => void {
   const controller = new ScratchController(new CryptoRandomSource());
-  let state: ScratchState = expectOk(controller.createSession(PLAYER, startingBalance('grattage', CHEAPEST_TICKET)));
+  let state: ScratchState = expectOk(controller.createSession(PLAYER, startingBalance('grattage')));
   let message = 'Choisissez un ticket, grattez à la souris ou au doigt.';
   let tone: Tone = 'info';
   let showCatalog = true;
@@ -141,7 +151,7 @@ export function mountScratch(root: HTMLElement): () => void {
     }).join('');
     const rebuy =
       state.player.bankroll < CHEAPEST_TICKET
-        ? `<div class="sc-rebuy"><p>Plus assez de jetons pour un ticket.</p><button class="btn primary" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button></div>`
+        ? `<div class="sc-rebuy"><p>Plus assez de jetons pour un ticket.</p>${refillButtonHtml('grattage')}</div>`
         : '';
     return `${rebuy}<div class="sc-catalog">${cards}</div>`;
   }
@@ -164,7 +174,7 @@ export function mountScratch(root: HTMLElement): () => void {
         Racheter un ${escapeHtml(game.name)} · ${formatChips(game.price)}
       </button>
       <button class="btn ghost" data-action="CATALOG">Tous les tickets</button>
-      ${state.player.bankroll < CHEAPEST_TICKET ? `<button class="btn" data-action="REBUY">Recaver ${formatChips(DEFAULT_BALANCE)} jetons</button>` : ''}
+      ${state.player.bankroll < CHEAPEST_TICKET ? refillButtonHtml('grattage', '') : ''}
       ${lotsHtml(game)}`;
   }
 
@@ -246,9 +256,13 @@ export function mountScratch(root: HTMLElement): () => void {
         sync();
         break;
       case 'REBUY':
-        state = expectOk(controller.createSession(PLAYER, DEFAULT_BALANCE));
-        showCatalog = true;
-        [message, tone] = [`Nouvelle cave de ${formatChips(DEFAULT_BALANCE)} jetons. Bonne chance !`, 'info'];
+        if (claimDailyRefill('grattage')) {
+          state = expectOk(controller.createSession(PLAYER, state.player.bankroll + DAILY_REFILL));
+          showCatalog = true;
+          [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
+        } else {
+          [message, tone] = [REFILL_USED_MESSAGE, 'error'];
+        }
         sync();
         break;
     }
