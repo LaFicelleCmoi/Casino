@@ -2,6 +2,8 @@ import { CryptoRandomSource, chips, playerId, type Card, type PlayerId } from '.
 import {
   BlackjackController,
   STANDARD_BLACKJACK_RULES,
+  dealerShouldHit,
+  scoreCards,
   scoreHand,
   type BlackjackCommand,
   type BlackjackEvent,
@@ -291,6 +293,57 @@ export function mountBlackjack(root: HTMLElement): () => void {
     }
   }
 
+  /** Déroule le tirage du croupier à partir de la carte `from` du sabot, comme si le joueur restait. */
+  function dealerDraw(dealerCards: readonly Card[], from: number): string {
+    const cards = [...dealerCards];
+    const drawn: Card[] = [];
+    for (let index = from; dealerShouldHit(scoreCards(cards), state.rules); index += 1) {
+      const card = state.shoe.cards[index];
+      if (card === undefined) break;
+      cards.push(card);
+      drawn.push(card);
+    }
+    const score = scoreCards(cards);
+    const total = score.isBust ? `${score.total}, bust` : String(score.total);
+    return drawn.length === 0 ? `ne tirera pas (${total})` : `tirera ${drawn.map(cardText).join(' ')} (${total})`;
+  }
+
+  function foresee(): string {
+    const { cards, nextIndex } = state.shoe;
+
+    if (state.phase === 'BETTING' || state.phase === 'ROUND_OVER') {
+      if (engine.project(state, PLAYER).shoe.reshufflePending) {
+        return 'Le sabot sera remélangé avant la prochaine manche : l’avenir est flou.';
+      }
+      // Ordre de la donne : joueur, croupier (visible), joueur, croupier (cachée).
+      const [mine1, dealerUp, mine2, dealerHole] = cards.slice(nextIndex, nextIndex + 4);
+      if (mine1 === undefined || dealerUp === undefined || mine2 === undefined || dealerHole === undefined) {
+        return 'Le sabot est presque vide.';
+      }
+      const mine = [mine1, mine2];
+      const dealer = [dealerUp, dealerHole];
+      let outcome = `Si je reste sur ces 2 cartes, le croupier ${dealerDraw(dealer, nextIndex + 4)}.`;
+      if (scoreCards(dealer).isBlackjack) outcome = 'Le croupier aura Blackjack.';
+      else if (scoreCards(mine).isBlackjack) outcome = 'Vous aurez Blackjack !';
+      return [
+        `Prochaines cartes du croupier : ${cardText(dealerUp)} (visible) · ${cardText(dealerHole)} (cachée)`,
+        `Mes prochaines cartes : ${mine.map(cardText).join(' ')}`,
+        outcome,
+      ].join('\n');
+    }
+
+    const hole = state.dealer.cards[1];
+    const dealerScore = scoreCards(state.dealer.cards);
+    const nextMine = cards.slice(nextIndex, nextIndex + 5).map(cardText).join(' ');
+    return [
+      `Carte cachée du croupier : ${hole === undefined ? '—' : cardText(hole)} (total ${dealerScore.total})`,
+      `Mes prochaines cartes : ${nextMine || '—'}`,
+      dealerScore.isBlackjack
+        ? 'Le croupier a Blackjack.'
+        : `Si je reste sur toutes mes mains, le croupier ${dealerDraw(state.dealer.cards, nextIndex)}.`,
+    ].join('\n');
+  }
+
   setCheatTarget({
     games: ['blackjack'],
     getBalance: () => state.seats[SEAT]?.bankroll ?? 0,
@@ -302,15 +355,7 @@ export function mountBlackjack(root: HTMLElement): () => void {
       return null;
     },
     refresh: render,
-    foresee: () => {
-      const betweenRounds = state.phase === 'BETTING' || state.phase === 'ROUND_OVER';
-      if (betweenRounds && engine.project(state, PLAYER).shoe.reshufflePending) {
-        return 'Le sabot sera remélangé avant la prochaine manche : l’avenir est flou.';
-      }
-      const { cards, nextIndex } = state.shoe;
-      const next = cards.slice(nextIndex, nextIndex + 6);
-      return next.length === 0 ? 'Le sabot est vide.' : `Prochaines cartes du sabot, dans l'ordre : ${next.map(cardText).join(' ')}`;
-    },
+    foresee,
   });
 
   root.addEventListener('click', onClick);
