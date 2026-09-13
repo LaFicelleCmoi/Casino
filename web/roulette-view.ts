@@ -1,21 +1,20 @@
-import { CryptoRandomSource, chips, playerId, type PlayerId, type RandomSource } from '../src/core/index.js';
+import { CryptoRandomSource, bigChips, playerId, type PlayerId, type RandomSource } from '../src/core/index.js';
 import {
   EUROPEAN_WHEEL_ORDER,
+  NO_LIMIT_ROULETTE_RULES,
   RouletteController,
-  STANDARD_ROULETTE_RULES,
   colorOf,
   describeNumber,
   type BetId,
   type PlacedBet,
   type RouletteCommand,
   type RouletteResultPhase,
-  type RouletteRules,
   type RouletteSeat,
   type RouletteState,
   type SpinOutcome,
 } from '../src/roulette/index.js';
 import { setCheatTarget } from './cheat-console.js';
-import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBigBalance } from './money-ledger.js';
 import { SEGMENT, layoutHtml, selectionOf, wheelSvg } from './roulette-layout.js';
 import {
   REFILL_DONE_MESSAGE,
@@ -33,12 +32,12 @@ type Tone = 'info' | 'win' | 'loss' | 'error';
 
 const PLAYER: PlayerId = playerId('vous');
 const SEAT = 0;
-/** Plafonds relevés pour permettre le tapis : seule reste la limite des entiers exacts (mise × 36 sur un plein). */
-const MAX_STAKE = Math.floor(Number.MAX_SAFE_INTEGER / 36);
-const RULES: RouletteRules = { ...STANDARD_ROULETTE_RULES, maxBetPerPosition: chips(MAX_STAKE), maxTotalBet: chips(MAX_STAKE) };
-const CHIP_VALUES = [1, 5, 25, 100, 500] as const;
+/** Aucune limite : un jeton minimum, puis le solde est le seul plafond, en entiers de précision arbitraire. */
+const RULES = NO_LIMIT_ROULETTE_RULES;
+const CHIP_VALUES = [1n, 5n, 25n, 100n, 500n] as const;
 const SPIN_MS = 5_000;
 const COLOR_LABELS = { GREEN: 'vert', RED: 'rouge', BLACK: 'noir' } as const;
+const COMPACT_UNITS = ['', 'k', 'M', 'Md', 'Bn', 'Bd', 'Tn'] as const;
 
 /** Source d'aléa dont on peut lire le prochain tirage : ne sert qu'au code de triche « voyance ». */
 class ForeseeableRandom implements RandomSource {
@@ -70,13 +69,22 @@ function outcomeText(outcome: SpinOutcome): string {
   return `${outcome.number} ${COLOR_LABELS[outcome.color]} · ${parity} · ${range}`;
 }
 
-function compactChips(amount: number): string {
-  const [unit, divisor] = amount >= 1_000_000 ? ['M', 1_000_000] : amount >= 1_000 ? ['k', 1_000] : ['', 1];
-  const scaled = amount / divisor;
-  return `${Number.isInteger(scaled) || scaled >= 100 ? Math.floor(scaled) : scaled.toFixed(1)}${unit}`;
+/** 1 500 → 1.5k, 557 256 278 016 000 → 557Bd : le jeton posé sur le tapis reste lisible quel que soit le montant. */
+function compactChips(amount: bigint): string {
+  let scaled = amount;
+  let remainder = 0n;
+  let unit = 0;
+  while (scaled >= 1_000n && unit < COMPACT_UNITS.length - 1) {
+    remainder = scaled % 1_000n;
+    scaled /= 1_000n;
+    unit += 1;
+  }
+  if (scaled >= 1_000n) return Number(amount).toExponential(1).replace('e+', 'e');
+  const decimal = scaled < 100n && remainder >= 100n ? `.${remainder / 100n}` : '';
+  return `${scaled}${decimal}${COMPACT_UNITS[unit] ?? ''}`;
 }
 
-const totalOf = (bets: readonly PlacedBet[]): number => bets.reduce((sum, bet) => sum + bet.amount, 0);
+const totalOf = (bets: readonly PlacedBet[]): bigint => bets.reduce<bigint>((sum, bet) => sum + bet.amount, 0n);
 
 export function mountRoulette(root: HTMLElement): () => void {
   const rng = new ForeseeableRandom(new CryptoRandomSource());
@@ -85,20 +93,20 @@ export function mountRoulette(root: HTMLElement): () => void {
   const spinMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 400 : SPIN_MS;
 
   /** Un joueur ruiné reste debout (le moteur refuse une cave nulle) : seule la recharge du jour lui est proposée. */
-  function newTable(buyIn: number): RouletteState {
+  function newTable(buyIn: bigint): RouletteState {
     const table = expectOk(controller.createTable(RULES));
-    if (buyIn === 0) return table;
+    if (buyIn === 0n) return table;
     return expectOk(
-      controller.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: chips(buyIn) }),
+      controller.apply(table, { type: 'SIT_DOWN', playerId: PLAYER, seatIndex: SEAT, displayName: 'Vous', buyIn: bigChips(buyIn) }),
     ).state;
   }
 
-  let state = newTable(startingBalance('roulette'));
+  let state = newTable(startingBigBalance('roulette'));
   let message =
     (state.seats[SEAT] ?? null) === null ? "Vous n'avez plus de jetons." : 'Faites vos jeux : choisissez un jeton, puis cliquez sur le tapis.';
   let tone: Tone = 'info';
   /** Valeur du jeton sélectionné, ou tout le solde avec le jeton All-in. */
-  let chipValue: number | 'ALL_IN' = 5;
+  let chipValue: bigint | 'ALL_IN' = 5n;
   let revealing = false;
   let rotation = 0;
   /** Mises du dernier tour, pour « Rejouer la mise ». */
@@ -123,14 +131,14 @@ export function mountRoulette(root: HTMLElement): () => void {
             <div class="rl-hub" data-hub></div>
           </div>
           <div class="rl-info">
-            <p class="rules-strip">Roulette européenne · un seul zéro · plein 35:1 · chances simples 1:1</p>
+            <p class="rules-strip">Roulette européenne · un seul zéro · plein 35:1 · chances simples 1:1 · aucune limite de mise</p>
             <p class="message" data-message aria-live="polite"></p>
             <div class="rl-history" data-history></div>
             <ul class="rl-results" data-results></ul>
           </div>
         </div>
         <div class="rl-layout-scroll"><div class="rl-layout" data-layout>${layoutHtml(catalog)}</div></div>
-        <p class="rl-hint">Clic : poser un jeton · clic droit : retirer une position · lignes et coins pour jouer à cheval · jeton All-in : tout votre solde sur une position</p>
+        <p class="rl-hint">Clic : poser un jeton · clic droit : retirer une position · lignes et coins pour jouer à cheval · jeton All-in : tout votre solde sur une position, sans plafond</p>
       </section>
       <nav class="controls" data-controls></nav>
     </div>`;
@@ -164,10 +172,10 @@ export function mountRoulette(root: HTMLElement): () => void {
     const bet = catalog.get(betId as BetId);
     if (bet === undefined || !canBet()) return;
     const allIn = chipValue === 'ALL_IN';
-    const amount = chipValue === 'ALL_IN' ? (seatOf()?.bankroll ?? 0) : chipValue;
-    if (amount === 0) {
+    const amount = chipValue === 'ALL_IN' ? (seatOf()?.bankroll ?? 0n) : chipValue;
+    if (amount === 0n) {
       [message, tone] = ['Plus aucun jeton à miser : lancez la bille ou effacez le tapis.', 'error'];
-    } else if (apply({ type: 'PLACE_BET', playerId: PLAYER, bet: selectionOf(bet), amount: chips(amount) })) {
+    } else if (apply({ type: 'PLACE_BET', playerId: PLAYER, bet: selectionOf(bet), amount: bigChips(amount) })) {
       [message, tone] = [allIn ? `All-in ! ${formatChips(amount)} jetons sur ${bet.label}` : `${formatChips(amount)} sur ${bet.label}`, 'info'];
     }
     render();
@@ -227,10 +235,10 @@ export function mountRoulette(root: HTMLElement): () => void {
     if (result === null) return;
     const { outcome } = result;
     const settlement = result.settlements.find((entry) => entry.seatIndex === SEAT);
-    const net = settlement?.net ?? 0;
+    const net = settlement?.net ?? 0n;
     const announce = outcomeText(outcome);
-    if (net > 0) [message, tone] = [`${announce}. Vous gagnez ${formatChips(net)} jetons !`, 'win'];
-    else if (net < 0) [message, tone] = [`${announce}. Vous perdez ${formatChips(-net)} jetons.`, 'loss'];
+    if (net > 0n) [message, tone] = [`${announce}. Vous gagnez ${formatChips(net)} jetons !`, 'win'];
+    else if (net < 0n) [message, tone] = [`${announce}. Vous perdez ${formatChips(-net)} jetons.`, 'loss'];
     else [message, tone] = [`${announce}. Vous récupérez votre mise.`, 'info'];
     const lostOutside = settlement?.bets.some((bet) => catalog.get(bet.betId)?.family === 'OUTSIDE') ?? false;
     if (outcome.number === 0 && lostOutside) message += ' Le zéro fait perdre toutes les mises externes.';
@@ -246,18 +254,18 @@ export function mountRoulette(root: HTMLElement): () => void {
   }
 
   function renderChips(bets: readonly PlacedBet[], outcome: SpinOutcome | null): void {
-    const amounts = new Map<string, number>(bets.map((bet) => [bet.betId, bet.amount]));
+    const amounts = new Map<string, bigint>(bets.map((bet) => [bet.betId, bet.amount]));
     const hitId = outcome === null ? null : expectOk(catalog.resolve({ kind: 'STRAIGHT', numbers: [outcome.number] })).id;
     for (const element of layoutEl.querySelectorAll<HTMLElement>('[data-bet]')) {
       const betId = element.dataset['bet'] ?? '';
-      const amount = amounts.get(betId) ?? 0;
+      const amount = amounts.get(betId) ?? 0n;
       const covered = outcome !== null && (catalog.get(betId as BetId)?.covers.includes(outcome.number) ?? false);
-      element.classList.toggle('has-chip', amount > 0);
-      element.classList.toggle('rl-won', amount > 0 && covered);
-      element.classList.toggle('rl-lost', amount > 0 && outcome !== null && !covered);
+      element.classList.toggle('has-chip', amount > 0n);
+      element.classList.toggle('rl-won', amount > 0n && covered);
+      element.classList.toggle('rl-lost', amount > 0n && outcome !== null && !covered);
       element.classList.toggle('rl-hit', betId === hitId);
       const chip = element.querySelector('.rl-chip');
-      if (chip !== null) chip.textContent = amount > 0 ? compactChips(amount) : '';
+      if (chip !== null) chip.textContent = amount > 0n ? compactChips(amount) : '';
     }
   }
 
@@ -282,12 +290,12 @@ export function mountRoulette(root: HTMLElement): () => void {
     const allInChip =
       `<button class="chip chip-all-in ${allInSelected ? 'selected' : ''}" data-action="CHIP" data-value="ALL_IN" ` +
       `aria-pressed="${allInSelected}" aria-label="All-in : miser tout le solde sur une position" title="Tout votre solde sur la prochaine position cliquée">All-in</button>`;
-    const canReplay = staked === 0 && lastBets.length > 0 && totalOf(lastBets) <= seat.bankroll;
+    const canReplay = staked === 0n && lastBets.length > 0 && totalOf(lastBets) <= seat.bankroll;
     return `<div class="chip-rack">${rack}${allInChip}</div>
       <span class="rl-total">Mise totale <strong>${formatChips(staked)}</strong></span>
-      ${button('CLEAR_BETS', 'Effacer', staked > 0, 'ghost')}
+      ${button('CLEAR_BETS', 'Effacer', staked > 0n, 'ghost')}
       ${button('REPLAY_BETTING', 'Rejouer la mise', canReplay, 'ghost')}
-      ${button('SPIN', 'Lancer la bille <kbd>↵</kbd>', staked > 0, 'primary')}`;
+      ${button('SPIN', 'Lancer la bille <kbd>↵</kbd>', staked > 0n, 'primary')}`;
   }
 
   function render(): void {
@@ -297,7 +305,7 @@ export function mountRoulette(root: HTMLElement): () => void {
     const revealed = result !== null && !revealing;
 
     // Pendant l'animation, le solde affiché reste celui d'avant le paiement.
-    const shownBankroll = revealing && settlement !== null ? settlement.bankrollAfter - settlement.totalReturned : (seat?.bankroll ?? 0);
+    const shownBankroll = revealing && settlement !== null ? settlement.bankrollAfter - settlement.totalReturned : (seat?.bankroll ?? 0n);
     bankrollEl.textContent = formatChips(shownBankroll);
     if (seat !== null) saveBalance('roulette', seat.bankroll + totalOf(seat.bets));
     const net = netOf(loadLedger().roulette);
@@ -342,10 +350,12 @@ export function mountRoulette(root: HTMLElement): () => void {
     const button = event.target.closest<HTMLButtonElement>('button[data-action]');
     if (button === null || button.disabled) return;
     switch (button.dataset['action']) {
-      case 'CHIP':
-        chipValue = button.dataset['value'] === 'ALL_IN' ? 'ALL_IN' : Number(button.dataset['value']);
+      case 'CHIP': {
+        const value = button.dataset['value'] ?? '';
+        chipValue = value === 'ALL_IN' ? 'ALL_IN' : BigInt(/^\d+$/.test(value) ? value : '5');
         render();
         break;
+      }
       case 'CLEAR_BETS':
         if (apply({ type: 'CLEAR_BETS', playerId: PLAYER })) [message, tone] = ['Tapis effacé.', 'info'];
         render();
@@ -366,7 +376,7 @@ export function mountRoulette(root: HTMLElement): () => void {
       case 'REBUY': {
         const seat = seatOf();
         if (claimDailyRefill('roulette')) {
-          state = newTable((seat === null ? 0 : seat.bankroll + totalOf(seat.bets)) + DAILY_REFILL);
+          state = newTable((seat === null ? 0n : seat.bankroll + totalOf(seat.bets)) + BigInt(DAILY_REFILL));
           lastBets = [];
           [message, tone] = [REFILL_DONE_MESSAGE, 'win'];
         } else {
@@ -397,7 +407,7 @@ export function mountRoulette(root: HTMLElement): () => void {
 
   setCheatTarget({
     games: ['roulette'],
-    getBalance: () => seatOf()?.bankroll ?? 0,
+    getBalance: () => seatOf()?.bankroll ?? 0n,
     setBalance: (_game, amount) => {
       const seat = seatOf();
       if (seat === null) {
@@ -407,7 +417,7 @@ export function mountRoulette(root: HTMLElement): () => void {
         return null;
       }
       if (revealing) return 'La bille tourne : attendez le résultat.';
-      state = { ...state, seats: state.seats.map((current, index) => (index === SEAT ? { ...seat, bankroll: chips(amount) } : current)) };
+      state = { ...state, seats: state.seats.map((current, index) => (index === SEAT ? { ...seat, bankroll: bigChips(amount) } : current)) };
       render();
       return null;
     },
