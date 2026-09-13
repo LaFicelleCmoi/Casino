@@ -12,6 +12,7 @@ import {
   isCutCardReached,
   ok,
   type Card,
+  type ChipRange,
   type PlayerId,
   type RandomSource,
   type Result,
@@ -68,6 +69,7 @@ type SitDown = Extract<BlackjackCommand, { readonly type: 'SIT_DOWN' }>;
 type TurnActionType = 'HIT' | 'STAND' | 'DOUBLE_DOWN' | 'SPLIT' | 'SURRENDER';
 
 const EMPTY_DEALER: DealerHand = { cards: [], holeCardRevealed: false };
+const NO_ACTIONS: BlackjackLegalActions = { actions: [], betRange: null, boxRanges: [] };
 
 function done(state: BlackjackState, events: readonly BlackjackEvent[] = []): Step {
   return ok({ state, events });
@@ -85,6 +87,12 @@ function findSeat(state: Table, playerId: PlayerId): BlackjackSeat | null {
 
 function setSeat<S extends Table>(table: S, index: SeatIndex, seat: BlackjackSeat | null): S {
   return { ...table, seats: table.seats.with(index, seat) };
+}
+
+/** Places restantes : chaque joueur assis en occupe une, chaque case misée au-delà de la première en prend une de plus. */
+function freePlaces(table: Table): number {
+  const used = table.seats.reduce((sum, seat) => sum + (seat === null ? 0 : Math.max(1, seat.pendingBets.length)), 0);
+  return table.rules.seatCount - used;
 }
 
 function handId(roundNumber: number, seatIndex: SeatIndex, ordinal: number): HandId {
@@ -110,7 +118,7 @@ function setStatus(table: Table, cursor: HandCursor, status: PlayerHandStatus, e
   return replaceHand(table, cursor, { ...hand, status });
 }
 
-/** Ordre de jeu : sièges de gauche à droite, puis mains dans l'ordre (les mains splittées suivent leur main d'origine). */
+/** Ordre de jeu : sièges de gauche à droite, puis mains dans l'ordre (cases, et mains splittées après leur main d'origine). */
 function firstPlayableHand(seats: readonly (BlackjackSeat | null)[]): HandCursor | null {
   for (const seat of seats) {
     if (seat === null) continue;
@@ -169,32 +177,32 @@ export class BlackjackController implements BlackjackEngine {
   }
 
   legalActions(state: BlackjackState, playerId: PlayerId): BlackjackLegalActions {
-    const none: BlackjackLegalActions = { actions: [], betRange: null };
     const seat = findSeat(state, playerId);
 
     if (seat === null) {
-      const canSit = (state.phase === 'BETTING' || state.phase === 'ROUND_OVER') && state.seats.includes(null);
-      return canSit ? { actions: ['SIT_DOWN'], betRange: null } : none;
+      const canSit =
+        (state.phase === 'BETTING' || state.phase === 'ROUND_OVER') && state.seats.includes(null) && freePlaces(state) >= 1;
+      return canSit ? { ...NO_ACTIONS, actions: ['SIT_DOWN'] } : NO_ACTIONS;
     }
 
     const bets = new BlackjackBetManager(state.rules);
     switch (state.phase) {
       case 'BETTING': {
-        const betRange = bets.betRange(seat);
+        const boxRanges = this.#boxRanges(state, seat);
         const actions: BlackjackPlayerActionType[] = ['LEAVE_SEAT'];
-        if (betRange !== null) actions.push('PLACE_BET');
-        if (seat.pendingBet > 0) actions.push('CLEAR_BET');
-        return { actions, betRange };
+        if (boxRanges.some((range) => range !== null)) actions.push('PLACE_BET');
+        if (seat.pendingBets.length > 0) actions.push('CLEAR_BET');
+        return { actions, betRange: boxRanges[0] ?? null, boxRanges };
       }
       case 'INSURANCE': {
-        if (seat.insurance.status !== 'PENDING') return none;
+        if (seat.insurance.status !== 'PENDING') return NO_ACTIONS;
         const stake = bets.insuranceStake(seat);
         const affordable = stake > 0 && seat.bankroll >= stake;
-        return { actions: affordable ? ['TAKE_INSURANCE', 'DECLINE_INSURANCE'] : ['DECLINE_INSURANCE'], betRange: null };
+        return { ...NO_ACTIONS, actions: affordable ? ['TAKE_INSURANCE', 'DECLINE_INSURANCE'] : ['DECLINE_INSURANCE'] };
       }
       case 'PLAYER_TURNS': {
         const hand = seat.hands[state.cursor.handIndex];
-        if (state.cursor.seatIndex !== seat.seatIndex || hand === undefined) return none;
+        if (state.cursor.seatIndex !== seat.seatIndex || hand === undefined) return NO_ACTIONS;
 
         const { rules } = state;
         const canMatchBet = seat.bankroll >= hand.bet;
@@ -204,10 +212,10 @@ export class BlackjackController implements BlackjackEngine {
         if (canMatchBet && canDouble(hand, rules)) actions.push('DOUBLE_DOWN');
         if (canMatchBet && canSplit(seat, hand, rules)) actions.push('SPLIT');
         if (canSurrender(seat, hand, rules)) actions.push('SURRENDER');
-        return { actions, betRange: null };
+        return { ...NO_ACTIONS, actions };
       }
       case 'ROUND_OVER':
-        return { actions: ['LEAVE_SEAT'], betRange: null };
+        return { ...NO_ACTIONS, actions: ['LEAVE_SEAT'] };
     }
   }
 
@@ -225,12 +233,14 @@ export class BlackjackController implements BlackjackEngine {
       viewer,
       viewerSeat: viewer === null ? null : (findSeat(state, viewer)?.seatIndex ?? null),
       seats: state.seats,
+      freePlaces: freePlaces(state),
       dealerCards,
       dealerScore: visibleDealerCards.length === 0 ? null : scoreCards(visibleDealerCards),
       shoe: { cardsRemaining: cardsRemaining(state.shoe), reshufflePending: isCutCardReached(state.shoe) },
       activeHand: state.phase === 'PLAYER_TURNS' ? state.cursor : null,
       settlements: state.phase === 'ROUND_OVER' ? state.settlements : [],
-      legalActions: viewer === null ? { actions: [], betRange: null } : this.legalActions(state, viewer),
+      insuranceSettlements: state.phase === 'ROUND_OVER' ? state.insuranceSettlements : [],
+      legalActions: viewer === null ? NO_ACTIONS : this.legalActions(state, viewer),
     };
   }
 
@@ -241,6 +251,15 @@ export class BlackjackController implements BlackjackEngine {
   }
 
   // ─── Gestion des sièges et des mises ────────────────────────────────────────
+
+  /** Bornes de chaque case misée, puis de la case suivante si une place libre permet de l'ouvrir. */
+  #boxRanges(table: Table, seat: BlackjackSeat): (ChipRange | null)[] {
+    const bets = new BlackjackBetManager(table.rules);
+    const ranges = seat.pendingBets.map((_, box) => bets.betRange(seat, box));
+    const next = seat.pendingBets.length;
+    ranges.push(next === 0 || freePlaces(table) >= 1 ? bets.betRange(seat, next) : null);
+    return ranges;
+  }
 
   #sitDown(state: BlackjackState, command: SitDown): Step {
     const { seatIndex, buyIn, playerId } = command;
@@ -253,6 +272,9 @@ export class BlackjackController implements BlackjackEngine {
     if (findSeat(state, playerId) !== null) {
       return err(new EngineError('ALREADY_SEATED', 'Ce joueur est déjà assis à la table'));
     }
+    if (freePlaces(state) < 1) {
+      return err(new EngineError('SEAT_TAKEN', 'Plus aucune place libre : les mains jouées occupent toute la table'));
+    }
     if (!isChips(buyIn) || buyIn === 0) {
       return err(new EngineError('INVALID_AMOUNT', `Cave invalide : ${buyIn}`));
     }
@@ -260,7 +282,7 @@ export class BlackjackController implements BlackjackEngine {
       seatIndex,
       player: { id: playerId, displayName: command.displayName.trim() || `Joueur ${seatIndex + 1}` },
       bankroll: buyIn,
-      pendingBet: ZERO_CHIPS,
+      pendingBets: [],
       hands: [],
       insurance: { status: 'NOT_OFFERED' },
     };
@@ -287,10 +309,14 @@ export class BlackjackController implements BlackjackEngine {
           { type: 'PLAYER_LEFT', seatIndex: seat.seatIndex, playerId: seat.player.id },
         ]);
       case 'PLACE_BET': {
-        const placed = bets.placeBet(seat, command.amount);
+        const box = command.box ?? 0;
+        if (box > 0 && box === seat.pendingBets.length && freePlaces(state) < 1) {
+          return err(new EngineError('ILLEGAL_ACTION', 'Aucune place libre pour jouer une main de plus'));
+        }
+        const placed = bets.placeBet(seat, command.amount, box);
         if (!placed.ok) return placed;
         return done(setSeat(state, seat.seatIndex, placed.value), [
-          { type: 'BET_PLACED', seatIndex: seat.seatIndex, amount: command.amount },
+          { type: 'BET_PLACED', seatIndex: seat.seatIndex, box, amount: command.amount },
         ]);
       }
       case 'CLEAR_BET':
@@ -313,7 +339,7 @@ export class BlackjackController implements BlackjackEngine {
   // ─── Distribution ──────────────────────────────────────────────────────────
 
   #deal(state: BlackjackState): Step {
-    if (!state.seats.some((seat) => seat !== null && seat.pendingBet > 0)) {
+    if (!state.seats.some((seat) => seat !== null && seat.pendingBets.length > 0)) {
       return err(new EngineError('NOT_ENOUGH_PLAYERS', 'Aucune mise posée'));
     }
     const events: BlackjackEvent[] = [];
@@ -329,34 +355,31 @@ export class BlackjackController implements BlackjackEngine {
       shoe: beginRound(table.shoe),
       seats: table.seats.map((seat): BlackjackSeat | null => {
         if (seat === null) return null;
-        const hands: PlayerHand[] =
-          seat.pendingBet > 0
-            ? [
-                {
-                  id: handId(roundNumber, seat.seatIndex, 0),
-                  cards: [],
-                  bet: seat.pendingBet,
-                  status: 'PLAYING',
-                  fromSplit: false,
-                  isSplitAces: false,
-                },
-              ]
-            : [];
-        return { ...seat, pendingBet: ZERO_CHIPS, hands, insurance: { status: 'NOT_OFFERED' } };
+        const hands = seat.pendingBets.map(
+          (bet, box): PlayerHand => ({
+            id: handId(roundNumber, seat.seatIndex, box),
+            cards: [],
+            bet,
+            status: 'PLAYING',
+            fromSplit: false,
+            isSplitAces: false,
+            box,
+          }),
+        );
+        return { ...seat, pendingBets: [], hands, insurance: { status: 'NOT_OFFERED' } };
       }),
     };
 
-    // Deux passages : une carte par joueur puis le croupier (face visible), puis la hole card face cachée.
-    const participants = table.seats.filter((seat): seat is BlackjackSeat => seat !== null && seat.hands.length > 0);
+    // Deux passages : une carte par main (sièges puis cases) puis le croupier face visible, puis la hole card face cachée.
+    const cursors: HandCursor[] = table.seats.flatMap((seat) =>
+      seat === null ? [] : seat.hands.map((_, handIndex) => ({ seatIndex: seat.seatIndex, handIndex })),
+    );
     for (const faceUp of [true, false]) {
-      for (const seat of participants) {
-        table = this.#dealToHand(table, { seatIndex: seat.seatIndex, handIndex: 0 }, events);
-      }
+      for (const cursor of cursors) table = this.#dealToHand(table, cursor, events);
       table = this.#dealToDealer(table, faceUp, events);
     }
 
-    for (const seat of participants) {
-      const cursor = { seatIndex: seat.seatIndex, handIndex: 0 };
+    for (const cursor of cursors) {
       if (scoreHand(handAt(table, cursor).hand).isBlackjack) {
         table = setStatus(table, cursor, 'BLACKJACK', events);
       }
@@ -460,7 +483,7 @@ export class BlackjackController implements BlackjackEngine {
     return done(next, events);
   }
 
-  /** Le split crée une seconde main indépendante (mise, cartes, statut), jouée juste après la main d'origine. */
+  /** Le split crée une seconde main indépendante (mise, cartes, statut) sur la même case, jouée juste après la main d'origine. */
   #split(table: Table, seat: BlackjackSeat, cursor: HandCursor, events: BlackjackEvent[]): Result<Table> {
     const reserved = new BlackjackBetManager(table.rules).reserveHandStake(seat, cursor.handIndex);
     if (!reserved.ok) return reserved;
@@ -479,6 +502,7 @@ export class BlackjackController implements BlackjackEngine {
       status: 'PLAYING',
       fromSplit: true,
       isSplitAces,
+      box: hand.box,
     };
     const hands = debited.hands.toSpliced(cursor.handIndex, 1, kept, created);
     let next = setSeat(table, seat.seatIndex, { ...debited, hands });
