@@ -22,6 +22,7 @@ export interface BlackjackRules {
   readonly deckCount: number;
   /** Part du sabot distribuée avant la carte de coupe (0 < p ≤ 1). */
   readonly penetration: number;
+  /** Places de la table (1 à 8) : chaque joueur en occupe une, et une de plus par main supplémentaire qu'il joue. */
   readonly seatCount: number;
   readonly minBet: Chips;
   readonly maxBet: Chips;
@@ -79,7 +80,7 @@ export function validateBlackjackRules(rules: BlackjackRules): Result<BlackjackR
 
   const shoe = validateShoeConfig({ deckCount: rules.deckCount, penetration: rules.penetration });
   if (!shoe.ok) problems.push(shoe.error.message);
-  if (!isIntegerBetween(rules.seatCount, 1, 7)) problems.push('seatCount doit être compris entre 1 et 7');
+  if (!isIntegerBetween(rules.seatCount, 1, 8)) problems.push('seatCount doit être compris entre 1 et 8');
   if (!isChips(rules.minBet) || rules.minBet === 0) problems.push('minBet doit être un entier strictement positif');
   if (!isChips(rules.maxBet) || rules.maxBet < rules.minBet) problems.push('maxBet doit être un entier ≥ minBet');
   if (!isValidRatio(rules.blackjackPayout)) problems.push('blackjackPayout doit être un rapport d’entiers positifs');
