@@ -324,7 +324,7 @@ export function mountPachinko(root: HTMLElement): () => void {
     games: ['pachinko'],
     getBalance: () => state.player.bankroll,
     setBalance: (_game, amount) => {
-      state = { ...state, player: { ...state.player, bankroll: chips(amount + pending) } };
+      state = { ...state, player: { ...state.player, bankroll: chips(Number(amount) + pending) } };
       render();
       return null;
     },
