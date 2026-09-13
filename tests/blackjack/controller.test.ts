@@ -116,6 +116,67 @@ describe('manches complètes', () => {
   });
 });
 
+describe('plusieurs mains', () => {
+  it('distribue une main par case, les joue dans l’ordre et règle chacune', () => {
+    const twoBoxes = run(aliceBets(), { type: 'PLACE_BET', playerId: alice, amount: chips(100), box: 1 });
+    expect(twoBoxes.seats[0]?.pendingBets).toEqual([100, 100]);
+    expect(twoBoxes.seats[0]?.bankroll).toBe(300);
+
+    // Ordre de donne : case 1, case 2, croupier visible, case 1, case 2, hole card.
+    // Case 1 : T + 9 = 19. Case 2 : 5 + 6 = 11. Croupier : 7 + T = 17, il reste.
+    const dealt = run(stackShoe(twoBoxes, 'Tc 5d 7h 9s 6c Td 2c 2d'), { type: 'DEAL' });
+    expect(dealt).toMatchObject({ phase: 'PLAYER_TURNS', cursor: { seatIndex: 0, handIndex: 0 } });
+    expect(dealt.seats[0]?.hands.map((hand) => [hand.box, hand.cards.map(cardCode)])).toEqual([
+      [0, ['Tc', '9s']],
+      [1, ['5d', '6c']],
+    ]);
+
+    const over = run(dealt, { type: 'STAND', playerId: alice }, { type: 'STAND', playerId: alice });
+    expect(over).toMatchObject({
+      phase: 'ROUND_OVER',
+      settlements: [
+        { outcome: 'WIN', returned: 200 },
+        { outcome: 'LOSS', returned: 0 },
+      ],
+    });
+    expect(over.seats[0]?.bankroll).toBe(500);
+  });
+
+  it('n’ouvre une case de plus que s’il reste une place libre', () => {
+    const full = run(
+      unwrap(controller.createTable({ ...STANDARD_BLACKJACK_RULES, seatCount: 2 })),
+      { type: 'SIT_DOWN', playerId: alice, seatIndex: 0, displayName: 'Alice', buyIn: chips(500) },
+      { type: 'PLACE_BET', playerId: alice, amount: chips(10) },
+      { type: 'PLACE_BET', playerId: alice, amount: chips(10), box: 1 },
+    );
+    const view = controller.project(full, alice);
+    expect(view.freePlaces).toBe(0);
+    expect(view.legalActions.boxRanges).toEqual([
+      { min: 1, max: 480 },
+      { min: 1, max: 480 },
+      null,
+    ]);
+    expectError(controller.apply(full, { type: 'PLACE_BET', playerId: alice, amount: chips(10), box: 2 }), 'ILLEGAL_ACTION');
+    expectError(
+      controller.apply(full, { type: 'SIT_DOWN', playerId: bob, seatIndex: 1, displayName: 'Bob', buyIn: chips(500) }),
+      'SEAT_TAKEN',
+    );
+    expect(controller.legalActions(full, bob).actions).toEqual([]);
+  });
+
+  it('assure toutes les mains d’un coup quand le croupier montre un As', () => {
+    const twoBoxes = run(aliceBets(), { type: 'PLACE_BET', playerId: alice, amount: chips(50), box: 1 });
+    // Case 1 : T + K. Case 2 : 9 + 8. Croupier : As + K = Blackjack.
+    const offered = run(stackShoe(twoBoxes, 'Ts 9h As Kd 8c Kc 2c 2d'), { type: 'DEAL' });
+    expect(offered.phase).toBe('INSURANCE');
+
+    const over = run(offered, { type: 'TAKE_INSURANCE', playerId: alice });
+    expect(over).toMatchObject({ phase: 'ROUND_OVER', insuranceSettlements: [{ stake: 75, returned: 225 }] });
+    expect(controller.project(over, alice).insuranceSettlements).toEqual([{ seatIndex: 0, stake: 75, returned: 225 }]);
+    expect(over.seats[0]?.bankroll).toBe(500);
+  });
+});
+
 describe('projection anti-triche', () => {
   it('masque la hole card et l’ordre du sabot', () => {
     const dealt = run(stackShoe(aliceBets(), '2c 3c 4c 5c 6c 7c 8c 9c'), { type: 'DEAL' });
