@@ -9,6 +9,7 @@ import {
   isChips,
   ok,
   subtractChips,
+  sumChips,
   type ChipRange,
   type Chips,
   type Ratio,
@@ -28,7 +29,7 @@ export interface StakeReservation {
 
 /**
  * Mouvements de jetons du Blackjack, tous immuables et vérifiés.
- * Invariant : bankroll + pendingBet + Σ mises des mains + assurance reste constant jusqu'au règlement.
+ * Invariant : bankroll + Σ mises des cases + Σ mises des mains + assurance reste constant jusqu'au règlement.
  * La légalité de jeu (Double Down sur 2 cartes, paire splittable…) relève de l'évaluateur (Étape 3) et du controller (Étape 4).
  */
 export class BlackjackBetManager {
@@ -38,44 +39,56 @@ export class BlackjackBetManager {
     this.#rules = rules;
   }
 
+  /** Jetons posés sur toutes les cases, pas encore distribués. */
+  pendingTotal(seat: BlackjackSeat): Chips {
+    return sumChips(seat.pendingBets);
+  }
+
   /**
-   * Montant ADDITIONNEL posable : PLACE_BET est cumulatif, comme des jetons ajoutés un à un sur le tapis.
-   * La première mise doit atteindre minBet ; le total ne peut dépasser maxBet ni le bankroll.
+   * Montant ADDITIONNEL posable sur une case : PLACE_BET est cumulatif, comme des jetons ajoutés un à un sur le tapis.
+   * La première mise d'une case doit atteindre minBet ; le total d'une case ne peut dépasser maxBet ni le bankroll.
+   * `box` peut désigner la case qui suit la dernière (ouverture) : la place libre est vérifiée par le controller.
    */
-  betRange(seat: BlackjackSeat): ChipRange | null {
-    const min = seat.pendingBet === 0 ? this.#rules.minBet : chips(1);
-    const max = Math.min(this.#rules.maxBet - seat.pendingBet, seat.bankroll);
+  betRange(seat: BlackjackSeat, box = 0): ChipRange | null {
+    if (!Number.isInteger(box) || box < 0 || box > seat.pendingBets.length) return null;
+    const pending = seat.pendingBets[box] ?? ZERO_CHIPS;
+    const min = pending === 0 ? this.#rules.minBet : chips(1);
+    const max = Math.min(this.#rules.maxBet - pending, seat.bankroll);
     return max >= min ? { min, max: chips(max) } : null;
   }
 
-  placeBet(seat: BlackjackSeat, amount: number): Result<BlackjackSeat> {
+  placeBet(seat: BlackjackSeat, amount: number, box = 0): Result<BlackjackSeat> {
     if (!isChips(amount) || amount === 0) {
       return err(new EngineError('INVALID_AMOUNT', `Mise invalide : ${amount}`));
+    }
+    if (!Number.isInteger(box) || box < 0 || box > seat.pendingBets.length) {
+      return err(new EngineError('ILLEGAL_ACTION', `Case ${box} inexistante`));
     }
     if (amount > seat.bankroll) {
       return err(
         new EngineError('INSUFFICIENT_FUNDS', `Mise de ${amount} supérieure au bankroll`, { bankroll: seat.bankroll }),
       );
     }
-    const range = this.betRange(seat);
+    const range = this.betRange(seat, box);
     if (range === null || amount < range.min || amount > range.max) {
       return err(
         new EngineError('BET_OUT_OF_LIMITS', `Mise de ${amount} hors des limites de table`, {
-          pendingBet: seat.pendingBet,
+          box,
+          pendingBet: seat.pendingBets[box] ?? 0,
           minBet: this.#rules.minBet,
           maxBet: this.#rules.maxBet,
         }),
       );
     }
-    return ok({
-      ...seat,
-      bankroll: subtractChips(seat.bankroll, amount),
-      pendingBet: addChips(seat.pendingBet, amount),
-    });
+    const pendingBets =
+      box === seat.pendingBets.length
+        ? [...seat.pendingBets, amount]
+        : seat.pendingBets.map((pending, index) => (index === box ? addChips(pending, amount) : pending));
+    return ok({ ...seat, bankroll: subtractChips(seat.bankroll, amount), pendingBets });
   }
 
   clearBet(seat: BlackjackSeat): BlackjackSeat {
-    return { ...seat, bankroll: addChips(seat.bankroll, seat.pendingBet), pendingBet: ZERO_CHIPS };
+    return { ...seat, bankroll: addChips(seat.bankroll, this.pendingTotal(seat)), pendingBets: [] };
   }
 
   /** Débite une mise égale à celle de la main visée : complément d'un Double Down ou mise de la main créée par un Split. */
@@ -102,10 +115,9 @@ export class BlackjackBetManager {
     return ok({ ...debited, hands: debited.hands.with(handIndex, { ...hand, bet: addChips(hand.bet, stake) }) });
   }
 
-  /** Assurance = moitié (arrondie à l'inférieur) de la mise initiale. */
+  /** Assurance = somme des moitiés (arrondies à l'inférieur) des mises initiales : elle couvre toutes les mains du siège. */
   insuranceStake(seat: BlackjackSeat): Chips {
-    const initialHand = seat.hands[0];
-    return initialHand === undefined ? ZERO_CHIPS : applyRatioFloor(initialHand.bet, HALF);
+    return sumChips(seat.hands.map((hand) => applyRatioFloor(hand.bet, HALF)));
   }
 
   takeInsurance(seat: BlackjackSeat): Result<BlackjackSeat> {
