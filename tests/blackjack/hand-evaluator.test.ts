@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ZERO_CHIPS, chips, playerId } from '../../src/core/index.js';
+import { chips, playerId } from '../../src/core/index.js';
 import {
   STANDARD_BLACKJACK_RULES,
   canDouble,
@@ -25,6 +25,7 @@ function hand(notation: string, overrides: Partial<PlayerHand> = {}): PlayerHand
     status: 'PLAYING',
     fromSplit: false,
     isSplitAces: false,
+    box: 0,
     ...overrides,
   };
 }
@@ -34,7 +35,7 @@ function seatWith(hands: PlayerHand[]): BlackjackSeat {
     seatIndex: 0,
     player: { id: playerId('p'), displayName: 'P' },
     bankroll: chips(1_000),
-    pendingBet: ZERO_CHIPS,
+    pendingBets: [],
     hands,
     insurance: { status: 'NOT_OFFERED' },
   };
@@ -88,19 +89,26 @@ describe('actions permises', () => {
     expect(canSplit(seatWith([jackKing]), jackKing, { ...rules, splitMatching: 'SAME_RANK' })).toBe(false);
   });
 
-  it('refuse le split au-delà du nombre maximal de mains', () => {
+  it('refuse le split au-delà du nombre maximal de mains d’une case', () => {
     const pair = hand('8s 8d');
     expect(canSplit(seatWith([pair, hand('8c 2d'), hand('8h 3d'), hand('4s 5d')]), pair, rules)).toBe(false);
+  });
+
+  it('compte cette limite case par case', () => {
+    const pair = hand('8s 8d');
+    const otherBox = { box: 1 };
+    expect(canSplit(seatWith([pair, hand('8c 2d', otherBox), hand('8h 3d', otherBox), hand('4s 5d', otherBox)]), pair, rules)).toBe(true);
   });
 
   it('bloque un As splitté après sa carte unique', () => {
     expect(canHit(hand('As 5d', { fromSplit: true, isSplitAces: true }), rules)).toBe(false);
   });
 
-  it('n’autorise le surrender qu’avec la règle LATE, sur la main initiale', () => {
+  it('n’autorise le surrender qu’avec la règle LATE, sur la main initiale de sa case', () => {
     const initial = hand('Ts 6d');
     expect(canSurrender(seatWith([initial]), initial, rules)).toBe(false);
     expect(canSurrender(seatWith([initial]), initial, { ...rules, surrender: 'LATE' })).toBe(true);
+    expect(canSurrender(seatWith([initial, hand('9s 7d', { box: 1 })]), initial, { ...rules, surrender: 'LATE' })).toBe(true);
   });
 });
 
