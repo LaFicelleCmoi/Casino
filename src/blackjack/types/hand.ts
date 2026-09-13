@@ -25,6 +25,8 @@ export interface PlayerHand {
   /** true si la main provient d'un split. */
   readonly fromSplit: boolean;
   readonly isSplitAces: boolean;
+  /** Case d'origine (0 pour la première) : une main issue d'un split garde la case de la main splittée. */
+  readonly box: number;
 }
 
 /** Score calculé par l'évaluateur (Étape 3) : jamais stocké dans l'état, pour qu'il ne puisse pas se désynchroniser. */
