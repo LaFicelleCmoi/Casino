@@ -1,4 +1,4 @@
-import type { Chips } from '../../core/index.js';
+import type { BigChips } from '../../core/index.js';
 import type { RouletteNumber, Third } from '../wheel/pockets.js';
 
 /** Mises internes : Plein, Cheval, Transversale, Carré, Sixain. */
@@ -45,5 +45,5 @@ export interface BetDefinition {
 /** Jetons posés sur une position ; plusieurs poses sur la même position s'additionnent. */
 export interface PlacedBet {
   readonly betId: BetId;
-  readonly amount: Chips;
+  readonly amount: BigChips;
 }
