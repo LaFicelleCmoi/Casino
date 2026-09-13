@@ -1,9 +1,9 @@
 import {
   EngineError,
-  addChips,
+  addBigChips,
   err,
   invariant,
-  isChips,
+  isBigChips,
   ok,
   type PlayerId,
   type RandomSource,
@@ -172,7 +172,7 @@ export class RouletteController implements RouletteEngine {
     const seats = state.seats.map((seat): RouletteSeat | null => {
       if (seat === null || seat.bets.length === 0) return seat;
       const settled = this.#payouts.settle(seat.bets, spin.number);
-      const bankroll = addChips(seat.bankroll, settled.totalReturned);
+      const bankroll = addBigChips(seat.bankroll, settled.totalReturned);
       const settlement: SeatSettlement = { ...settled, seatIndex: seat.seatIndex, playerId: seat.player.id, bankrollAfter: bankroll };
       settlements.push(settlement);
       events.push({ type: 'SEAT_SETTLED', settlement });
@@ -206,8 +206,8 @@ export class RouletteController implements RouletteEngine {
     if (findSeat(state, playerId) !== null) {
       return err(new EngineError('ALREADY_SEATED', 'Ce joueur est déjà assis à la table'));
     }
-    if (!isChips(buyIn) || buyIn === 0) {
-      return err(new EngineError('INVALID_AMOUNT', `Cave invalide : ${buyIn}`));
+    if (!isBigChips(buyIn) || buyIn === 0n) {
+      return err(new EngineError('INVALID_AMOUNT', `Cave invalide : ${String(buyIn)}`));
     }
     const seat: RouletteSeat = {
       seatIndex,
@@ -234,7 +234,7 @@ export class RouletteController implements RouletteEngine {
       case 'LEAVE_SEAT':
         // Les jetons encore posés (avant « Rien ne va plus ») repartent avec le joueur.
         return done(setSeat(state, seatIndex, null), [
-          { type: 'PLAYER_LEFT', seatIndex, playerId: seat.player.id, bankroll: addChips(seat.bankroll, bets.totalStaked(seat)) },
+          { type: 'PLAYER_LEFT', seatIndex, playerId: seat.player.id, bankroll: addBigChips(seat.bankroll, bets.totalStaked(seat)) },
         ]);
       case 'PLACE_BET': {
         const placed = bets.placeBet(seat, command.bet, command.amount);
