@@ -174,6 +174,41 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
 }
 .bet-spot.filled { border-style: solid; border-color: var(--gold); color: var(--gold); font-size: 24px; letter-spacing: 0; font-weight: 800; background: rgba(0, 0, 0, 0.2); }
 .shoe-info { margin: 0; text-align: right; font-size: 12px; color: rgba(244, 239, 226, 0.55); }
+.bj-seats { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; align-items: flex-end; margin-top: auto; }
+.bj-seat { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.bj-seat .bj-hands { margin-top: 0; gap: 14px; }
+.bj-seat.shared { padding: 10px 12px; border-radius: 18px; background: rgba(0, 0, 0, 0.14); border: 1px solid rgba(255, 255, 255, 0.06); }
+.bj-seat.shared.mine { border-color: rgba(224, 184, 79, 0.55); background: rgba(34, 24, 8, 0.35); }
+.bj-seat-head { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.bj-seat-name { font-weight: 700; }
+.bj-seat-bank { color: var(--gold); font-variant-numeric: tabular-nums; }
+.ready-badge { background: var(--win); color: #062414; font-size: 11px; padding: 2px 8px; }
+.bj-waiting { flex-basis: 100%; margin: 0; text-align: center; font-size: 13px; color: rgba(244, 239, 226, 0.7); }
+.bj-seat .bet-spot { margin: 0; width: 104px; height: 104px; }
+.bj-seat .bet-spot.small { width: 64px; height: 64px; font-size: 11px; letter-spacing: 0.1em; }
+.bj-seat .bet-spot.small.filled { font-size: 15px; letter-spacing: 0; }
+button.bet-spot { font-family: inherit; background: transparent; cursor: pointer; transition: box-shadow 0.15s, transform 0.15s; }
+button.bet-spot:hover { transform: translateY(-2px); }
+.bet-spot.selected { box-shadow: 0 0 0 3px rgba(224, 184, 79, 0.85), 0 0 24px rgba(224, 184, 79, 0.35); }
+.bet-spot.add { color: var(--gold); border-color: rgba(224, 184, 79, 0.55); letter-spacing: 0.08em; }
+
+/* ─── Tables partagées ─────────────────────────────── */
+.share-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
+.share-bar[hidden] { display: none; }
+.share-name { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.share-name input { width: 150px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #0d1310; color: var(--text); font: inherit; font-size: 14px; }
+.share-link { flex: 1; min-width: 220px; padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(224, 184, 79, 0.45); background: #0d1310; color: var(--gold); font: 13px ui-monospace, "SFMono-Regular", Menlo, monospace; }
+.share-count { margin-left: auto; color: var(--gold); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.share-hint { color: var(--muted); font-size: 13px; }
+a.btn { text-decoration: none; }
+.join-panel { margin: auto; max-width: 440px; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 24px; border-radius: 20px; text-align: center; background: rgba(8, 12, 10, 0.86); border: 1px solid var(--line); box-shadow: 0 20px 40px -20px rgba(0, 0, 0, 0.8); }
+.join-panel h2 { font-size: 24px; }
+.join-panel p { margin: 0; color: rgba(244, 239, 226, 0.85); }
+.join-panel p strong { color: var(--gold); }
+.join-panel .join-error { color: #ffb74d; }
+.join-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.poker-join { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; padding: 16px; }
+.poker-join:empty { display: none; }
 
 /* ─── Texas Hold'em ────────────────────────────────── */
 .holdem-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
@@ -185,12 +220,15 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
 .pot:empty { visibility: hidden; }
 
 .seat { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 150px; transform: translate(-50%, -50%); }
-.seat-0 { left: 50%; top: 94%; }
-.seat-1 { left: 11%; top: 76%; }
-.seat-2 { left: 11%; top: 22%; }
-.seat-3 { left: 50%; top: 4%; }
-.seat-4 { left: 89%; top: 22%; }
-.seat-5 { left: 89%; top: 76%; }
+/* 8 positions autour de la table, dans le sens horaire depuis le bas : chaque joueur se voit en pos-0. */
+.seat.pos-0 { left: 50%; top: 94%; }
+.seat.pos-1 { left: 20%; top: 86%; }
+.seat.pos-2 { left: 9%; top: 50%; }
+.seat.pos-3 { left: 22%; top: 12%; }
+.seat.pos-4 { left: 50%; top: 4%; }
+.seat.pos-5 { left: 78%; top: 12%; }
+.seat.pos-6 { left: 91%; top: 50%; }
+.seat.pos-7 { left: 80%; top: 86%; }
 .seat-cards { display: flex; gap: 4px; min-height: calc(var(--card-w) * 0.62 * 1.4); }
 .seat-plate { position: relative; display: flex; flex-direction: column; align-items: center; padding: 6px 14px; min-width: 120px; border-radius: 14px; background: rgba(8, 12, 10, 0.88); border: 1px solid var(--line); transition: border-color 0.2s, box-shadow 0.2s; }
 .seat-name { font-weight: 600; font-size: 14px; }
@@ -766,10 +804,14 @@ kbd { font: 600 11px/1 ui-monospace, monospace; padding: 3px 5px; border-radius:
   .board-zone { padding: 0 8%; }
   .seat { width: 104px; }
   .seat-plate { min-width: 92px; padding: 4px 8px; }
-  .seat-1 { left: 16%; top: 72%; }
-  .seat-2 { left: 16%; top: 28%; }
-  .seat-4 { left: 84%; top: 28%; }
-  .seat-5 { left: 84%; top: 72%; }
+  .seat.pos-1 { left: 20%; top: 80%; }
+  .seat.pos-2 { left: 16%; top: 50%; }
+  .seat.pos-3 { left: 20%; top: 18%; }
+  .seat.pos-5 { left: 80%; top: 18%; }
+  .seat.pos-6 { left: 84%; top: 50%; }
+  .seat.pos-7 { left: 80%; top: 80%; }
+  .share-link { min-width: 0; flex-basis: 100%; }
+  .share-count { margin-left: 0; }
   .chip { width: 46px; height: 46px; }
   .btn { padding: 10px 14px; }
 }
