@@ -8,7 +8,12 @@ export type BlackjackPlayerAction =
       readonly buyIn: Chips;
     })
   | PlayerCommand<'LEAVE_SEAT'>
-  | (PlayerCommand<'PLACE_BET'> & { readonly amount: Chips })
+  | (PlayerCommand<'PLACE_BET'> & {
+      readonly amount: Chips;
+      /** Case visée, 0 par défaut ; la case qui suit la dernière en ouvre une nouvelle s'il reste une place libre. */
+      readonly box?: number;
+    })
+  /** Retire les jetons de toutes les cases. */
   | PlayerCommand<'CLEAR_BET'>
   | PlayerCommand<'TAKE_INSURANCE'>
   | PlayerCommand<'DECLINE_INSURANCE'>
