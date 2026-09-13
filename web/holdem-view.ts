@@ -1,67 +1,44 @@
-import { CryptoRandomSource, chips, playerId, type Card, type PlayerId, type SeatIndex } from '../src/core/index.js';
+import { CryptoRandomSource, chips, type Card, type SeatIndex } from '../src/core/index.js';
 import {
   HoldemController,
-  STANDARD_HOLDEM_RULES,
   isHandInProgress,
-  type HandCategory,
-  type HoldemCommand,
-  type HoldemEvent,
-  type HoldemState,
   type HoldemTableView,
   type PokerBettingActionType,
+  type PokerSeat,
   type PokerSeatView,
   type Street,
 } from '../src/holdem/index.js';
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
-import { chooseBotAction } from './holdem-bot.js';
-import { DAILY_REFILL, DEFAULT_BALANCE, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import {
+  CATEGORY_LABELS,
+  HOLDEM_HOST,
+  HOLDEM_TABLE_RULES,
+  HoldemTable,
+  STREET_LABELS,
+  isSimpleBettingAction,
+  type HoldemSnapshot,
+  type HoldemTableCommand,
+} from './holdem-table.js';
+import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { MAX_TABLE_PLAYERS } from './net/peer-link.js';
+import { loadPlayerName, savePlayerName } from './net/player-name.js';
+import { joinSharedTable, localClient, shareTable, type ShareSession, type TableClient } from './net/shared-table.js';
+import { GUEST_CHEAT_LOCK, joinPanelHtml, shareBarHtml } from './net/table-ui.js';
 import {
   DealAnimator,
   REFILL_DONE_MESSAGE,
   REFILL_USED_MESSAGE,
   cardText,
   escapeHtml,
-  expectOk,
   formatChips,
   formatSigned,
   queryIn,
   refillButtonHtml,
+  setHtml,
   signClass,
 } from './ui.js';
 
-const HUMAN: PlayerId = playerId('vous');
-const HUMAN_SEAT = 0;
-const BUY_IN = DEFAULT_BALANCE;
-/** Cave libre : le joueur se rassoit avec son solde sauvegardé, qu'il soit petit ou très au-dessus de la cave standard. */
-const RULES = {
-  ...STANDARD_HOLDEM_RULES,
-  seatCount: 6,
-  minBuyIn: STANDARD_HOLDEM_RULES.bigBlind,
-  maxBuyIn: chips(Number.MAX_SAFE_INTEGER),
-};
-const NAMES = ['Vous', 'Léa', 'Hugo', 'Nora', 'Malik', 'Inès'] as const;
-const BOT_DELAY_MS = 850;
-
-const CATEGORY_LABELS: Record<HandCategory, string> = {
-  HIGH_CARD: 'Hauteur',
-  ONE_PAIR: 'Paire',
-  TWO_PAIR: 'Double paire',
-  THREE_OF_A_KIND: 'Brelan',
-  STRAIGHT: 'Quinte',
-  FLUSH: 'Couleur',
-  FULL_HOUSE: 'Full',
-  FOUR_OF_A_KIND: 'Carré',
-  STRAIGHT_FLUSH: 'Quinte flush',
-};
-
-const ACTION_LOG: Record<PokerBettingActionType, string> = {
-  FOLD: 'se couche',
-  CHECK: 'checke',
-  CALL: 'suit',
-  BET: 'mise',
-  RAISE: 'relance à',
-  ALL_IN: 'fait tapis à',
-};
+type Client = TableClient<HoldemSnapshot, HoldemTableCommand>;
 
 const ACTION_BADGES: Record<PokerBettingActionType, string> = {
   FOLD: 'Couché',
@@ -72,8 +49,6 @@ const ACTION_BADGES: Record<PokerBettingActionType, string> = {
   ALL_IN: 'Tapis',
 };
 
-const STREET_LABELS: Record<Exclude<Street, 'PREFLOP'>, string> = { FLOP: 'Flop', TURN: 'Turn', RIVER: 'River' };
-
 const UPCOMING_STREETS: Readonly<Record<Street, readonly Exclude<Street, 'PREFLOP'>[]>> = {
   PREFLOP: ['FLOP', 'TURN', 'RIVER'],
   FLOP: ['TURN', 'RIVER'],
@@ -81,49 +56,38 @@ const UPCOMING_STREETS: Readonly<Record<Street, readonly Exclude<Street, 'PREFLO
   RIVER: [],
 };
 
-function idFor(seatIndex: SeatIndex): PlayerId {
-  return seatIndex === HUMAN_SEAT ? HUMAN : playerId(`bot-${seatIndex}`);
-}
-
-function sitDown(engine: HoldemController, state: HoldemState, seatIndex: SeatIndex, buyIn = BUY_IN): HoldemState {
-  return expectOk(
-    engine.apply(state, {
-      type: 'SIT_DOWN',
-      playerId: idFor(seatIndex),
-      seatIndex,
-      displayName: NAMES[seatIndex] ?? `Joueur ${seatIndex + 1}`,
-      buyIn: chips(buyIn),
-    }),
-  ).state;
-}
-
-/** Le joueur ne s'assoit que s'il peut payer la grosse blinde ; ruiné, il attend la recharge du jour. */
-function newTable(engine: HoldemController, heroBuyIn: number): HoldemState {
-  let state: HoldemState = expectOk(engine.createTable(RULES));
-  for (let seatIndex = 0; seatIndex < NAMES.length; seatIndex += 1) {
-    if (seatIndex === HUMAN_SEAT && heroBuyIn < RULES.minBuyIn) continue;
-    state = sitDown(engine, state, seatIndex, seatIndex === HUMAN_SEAT ? heroBuyIn : BUY_IN);
-  }
-  return state;
-}
-
 function potTotal(view: HoldemTableView): number {
   return (
     view.pots.reduce((sum, pot) => sum + pot.amount, 0) + view.seats.reduce((sum, seat) => sum + (seat?.streetBet ?? 0), 0)
   );
 }
 
-export function mountHoldem(root: HTMLElement): () => void {
+const seatOfViewer = (view: HoldemTableView): PokerSeatView | null =>
+  view.viewerSeat === null ? null : (view.seats[view.viewerSeat] ?? null);
+
+const nameOf = (view: HoldemTableView, seatIndex: SeatIndex): string =>
+  view.seats[seatIndex]?.player.displayName ?? `Siège ${seatIndex + 1}`;
+
+/** Joue sur la table locale (tableId null) ou rejoint la table partagée désignée par le lien. */
+export function mountHoldem(root: HTMLElement, tableId: string | null = null): () => void {
   const rng = new CryptoRandomSource();
   const engine = new HoldemController(rng);
   const animator = new DealAnimator();
-  let state = newTable(engine, startingBalance('holdem'));
-  let log: string[] = [];
-  let notice = '';
+  const host = tableId === null ? new HoldemTable(engine, rng, loadPlayerName(), startingBalance('holdem')) : null;
+  let client: Client | null = host === null ? null : localClient(host, HOLDEM_HOST);
+  let share: ShareSession | null = null;
+  let opening = false;
+  let connecting = false;
+  let joinError: string | null = null;
+  let unsubscribe: () => void = () => {};
   let raiseTo = 0;
-  let timer: number | undefined;
-  /** Tapis du joueur avant la main en cours ; null hors main. */
-  let handStartStack: number | null = null;
+  let localMessage: string | null = null;
+  let last: HoldemSnapshot | null = null;
+  let lastBarHtml = '';
+  let disposed = false;
+  /** Main en cours pour le bilan : son numéro et le tapis de départ (mises forcées comprises). */
+  let tracked: { readonly hand: number; readonly start: number } | null = null;
+  let lastRecordedHand = 0;
 
   root.innerHTML = `
     <div class="game">
@@ -135,6 +99,7 @@ export function mountHoldem(root: HTMLElement): () => void {
           <div class="bankroll">Tapis <strong data-stack></strong></div>
         </div>
       </header>
+      <div class="share-bar" data-share></div>
       <div class="holdem-layout">
         <section class="felt poker-felt">
           <div class="poker-table">
@@ -144,6 +109,7 @@ export function mountHoldem(root: HTMLElement): () => void {
               <p class="message" data-message aria-live="polite"></p>
             </div>
             <div data-seats></div>
+            <div class="poker-join" data-join></div>
           </div>
         </section>
         <aside class="side-panel">
@@ -154,72 +120,63 @@ export function mountHoldem(root: HTMLElement): () => void {
       <nav class="controls" data-controls></nav>
     </div>`;
 
+  const shareEl = queryIn<HTMLElement>(root, '[data-share]');
   const stackEl = queryIn<HTMLElement>(root, '[data-stack]');
   const ledgerEl = queryIn<HTMLElement>(root, '[data-ledger]');
   const potEl = queryIn<HTMLElement>(root, '[data-pot]');
   const boardEl = queryIn<HTMLElement>(root, '[data-board]');
   const messageEl = queryIn<HTMLElement>(root, '[data-message]');
   const seatsEl = queryIn<HTMLElement>(root, '[data-seats]');
+  const joinEl = queryIn<HTMLElement>(root, '[data-join]');
   const logEl = queryIn<HTMLElement>(root, '[data-log]');
   const controlsEl = queryIn<HTMLElement>(root, '[data-controls]');
 
-  const humanStack = (): number => state.seats[HUMAN_SEAT]?.stack ?? 0;
+  const hostSeat = (): PokerSeat | null => host?.state.seats.find((seat) => seat?.player.id === HOLDEM_HOST) ?? null;
 
-  /** Carte réelle derrière une carte face cachée d'un adversaire, si les rayons X sont actifs. */
-  const hiddenCard = (seatIndex: number, cardIndex: number): Card | null =>
-    xrayEnabled() ? (state.seats[seatIndex]?.holeCards?.[cardIndex] ?? null) : null;
-
-  /** Cartes communes à venir, en sautant la carte brûlée avant chaque street. */
-  function foresee(): string {
-    const current = state;
-    if (!isHandInProgress(current)) return 'Aucune main en cours : le paquet sera mélangé à la prochaine donne.';
-    const streets = UPCOMING_STREETS[current.phase];
-    if (streets.length === 0) return 'Toutes les cartes communes sont déjà sur la table.';
-    let index = current.deck.nextIndex;
-    return streets
-      .map((street) => {
-        const count = street === 'FLOP' ? 3 : 1;
-        const drawn = current.deck.cards.slice(index + 1, index + 1 + count);
-        index += 1 + count;
-        return `${STREET_LABELS[street]} : ${drawn.map(cardText).join(' ')}`;
-      })
-      .join(' · ');
+  function send(command: HoldemTableCommand): void {
+    localMessage = null;
+    client?.send(command);
   }
 
-  const nameOf = (seatIndex: SeatIndex): string =>
-    state.seats[seatIndex]?.player.displayName ?? `Siège ${seatIndex + 1}`;
-
-  function pushLog(line: string): void {
-    log = [...log, line].slice(-60);
+  function renderLedger(): void {
+    const net = netOf(loadLedger().holdem);
+    ledgerEl.textContent = formatSigned(net);
+    ledgerEl.className = signClass(net);
   }
 
-  function describeEvent(event: HoldemEvent): string | null {
-    switch (event.type) {
-      case 'HAND_STARTED':
-        return `— Main n°${event.handNumber} · bouton : ${nameOf(event.buttonSeat)}`;
-      case 'FORCED_BET_POSTED':
-        if (event.kind === 'ANTE') return null;
-        return `${nameOf(event.seatIndex)} poste la ${event.kind === 'SMALL_BLIND' ? 'petite' : 'grosse'} blinde (${formatChips(event.amount)})`;
-      case 'PLAYER_ACTED': {
-        const amount = event.action === 'CALL' ? event.amount : event.streetBet;
-        const suffix = event.action === 'FOLD' || event.action === 'CHECK' ? '' : ` ${formatChips(amount)}`;
-        return `${nameOf(event.seatIndex)} ${ACTION_LOG[event.action]}${suffix}`;
-      }
-      case 'STREET_DEALT':
-        return `${STREET_LABELS[event.street]} : ${event.cards.map(cardText).join(' ')}`;
-      case 'UNCALLED_BET_RETURNED':
-        return `${formatChips(event.amount)} non suivis rendus à ${nameOf(event.seatIndex)}`;
-      case 'POT_AWARDED': {
-        const hand = event.award.winningHand;
-        const potName = event.award.potIndex === 0 ? 'le pot principal' : `le side pot n°${event.award.potIndex}`;
-        return event.award.shares
-          .map((share) => `${nameOf(share.seatIndex)} remporte ${formatChips(share.amount)} (${potName}${hand ? `, ${CATEGORY_LABELS[hand.category]}` : ''})`)
-          .join(' · ');
-      }
-      default:
-        return null;
+  function renderShareBar(snapshot: HoldemSnapshot | null): void {
+    shareEl.hidden = snapshot === null;
+    if (snapshot === null) return;
+    const html = shareBarHtml({
+      mode: host === null ? 'guest' : share !== null ? 'host' : opening ? 'opening' : 'solo',
+      name: loadPlayerName(),
+      link: share?.link ?? null,
+      players: snapshot.players,
+    });
+    // Ne reconstruit le bandeau que s'il change : sinon le pseudo en cours de saisie perdrait le focus.
+    if (html !== lastBarHtml) {
+      shareEl.innerHTML = html;
+      lastBarHtml = html;
     }
   }
+
+  /** Suit le tapis du joueur sur chaque main jouée et enregistre le résultat à l'abattage, une seule fois. */
+  function track(view: HoldemTableView): void {
+    const seat = seatOfViewer(view);
+    const inHand = view.phase !== 'WAITING' && view.phase !== 'HAND_COMPLETE';
+    if (inHand && seat !== null && seat.holeCards !== null && view.handNumber > lastRecordedHand && tracked?.hand !== view.handNumber) {
+      tracked = { hand: view.handNumber, start: seat.stack + seat.totalCommitted };
+    }
+    if (view.phase === 'HAND_COMPLETE' && tracked !== null && tracked.hand === view.handNumber) {
+      recordResult('holdem', (seat?.stack ?? 0) - tracked.start);
+      lastRecordedHand = view.handNumber;
+      tracked = null;
+    }
+  }
+
+  /** Carte réelle derrière une carte face cachée d'un adversaire : rayons X, sur la table du créateur uniquement. */
+  const hiddenCard = (seatIndex: number, cardIndex: number): Card | null =>
+    host !== null && xrayEnabled() ? (host.state.seats[seatIndex]?.holeCards?.[cardIndex] ?? null) : null;
 
   function potText(view: HoldemTableView): string {
     if (view.outcome !== null) {
@@ -227,18 +184,22 @@ export function mountHoldem(root: HTMLElement): () => void {
       for (const award of view.outcome.awards) {
         for (const share of award.shares) won.set(share.seatIndex, (won.get(share.seatIndex) ?? 0) + share.amount);
       }
-      return [...won].map(([seat, amount]) => `${nameOf(seat)} +${formatChips(amount)}`).join(' · ');
+      return [...won].map(([seat, amount]) => `${nameOf(view, seat)} +${formatChips(amount)}`).join(' · ');
     }
     return view.phase === 'WAITING' ? '' : `Pot ${formatChips(potTotal(view))}`;
   }
 
-  function turnText(view: HoldemTableView): string {
+  function turnText(snapshot: HoldemSnapshot): string {
+    const { view } = snapshot;
     if (view.outcome !== null) {
       const hand = view.outcome.awards[0]?.winningHand;
       return hand ? `Abattage : ${CATEGORY_LABELS[hand.category]} gagnant.` : 'Tout le monde s’est couché.';
     }
+    if (view.viewerSeat === null) {
+      return host === null ? 'Vous serez assis à la prochaine main.' : "Vous n'avez plus de jetons.";
+    }
     if (view.toAct === null) return '';
-    return view.toAct === HUMAN_SEAT ? 'À vous de parler.' : `${nameOf(view.toAct)} réfléchit…`;
+    return view.toAct === view.viewerSeat ? 'À vous de parler.' : `${nameOf(view, view.toAct)} réfléchit…`;
   }
 
   function renderSeat(view: HoldemTableView, seat: PokerSeatView | null, index: number): string {
@@ -246,6 +207,7 @@ export function mountHoldem(root: HTMLElement): () => void {
     const { outcome } = view;
     const winners = new Set(outcome?.awards.flatMap((award) => award.shares.map((share) => share.seatIndex)) ?? []);
     const shown = outcome?.kind === 'SHOWDOWN' ? outcome.showdown.find((entry) => entry.seatIndex === index) : undefined;
+    const position = (index - (view.viewerSeat ?? 0) + MAX_TABLE_PLAYERS) % MAX_TABLE_PLAYERS;
 
     const cards =
       seat.holeCards === null
@@ -256,7 +218,7 @@ export function mountHoldem(root: HTMLElement): () => void {
                 `h${view.handNumber}-${index}-${i}-${card.faceUp ? 'up' : 'down'}`,
                 card.faceUp ? card.card : hiddenCard(index, i),
                 true,
-                !card.faceUp && xrayEnabled(),
+                !card.faceUp && host !== null && xrayEnabled(),
               ),
             )
             .join('');
@@ -269,11 +231,11 @@ export function mountHoldem(root: HTMLElement): () => void {
 
     const classes = [
       'seat',
-      `seat-${index}`,
+      `pos-${position}`,
       view.toAct === index ? 'acting' : '',
       seat.status === 'FOLDED' ? 'folded' : '',
       winners.has(index) ? 'winner' : '',
-      index === HUMAN_SEAT ? 'hero' : '',
+      index === view.viewerSeat ? 'hero' : '',
     ]
       .filter(Boolean)
       .join(' ');
@@ -293,13 +255,16 @@ export function mountHoldem(root: HTMLElement): () => void {
       </div>`;
   }
 
-  function renderControls(view: HoldemTableView): string {
+  function renderControls(snapshot: HoldemSnapshot): string {
+    const { view } = snapshot;
     const button = (action: string, label: string, variant = '', data = ''): string =>
       `<button class="btn ${variant}" data-action="${action}" ${data}>${label}</button>`;
 
     if (view.phase === 'WAITING' || view.phase === 'HAND_COMPLETE') {
+      const seat = seatOfViewer(view);
+      const queued = seat === null && host === null && startingBalance('holdem') >= view.rules.bigBlind;
       // Sans de quoi payer la grosse blinde, le joueur ne peut plus rejouer : place à la recharge du jour.
-      const broke = (view.seats[HUMAN_SEAT]?.stack ?? 0) < RULES.bigBlind;
+      const broke = !queued && (seat?.stack ?? 0) < view.rules.bigBlind;
       return broke
         ? `<p class="waiting">Vous n'avez plus de jetons.</p>${refillButtonHtml('holdem')}`
         : button('NEXT_HAND', 'Main suivante <kbd>↵</kbd>', 'primary');
@@ -307,7 +272,7 @@ export function mountHoldem(root: HTMLElement): () => void {
 
     const legal = view.legalActions;
     if (legal === null) {
-      return `<p class="waiting">${view.toAct === null ? '' : `${escapeHtml(nameOf(view.toAct))} réfléchit…`}</p>`;
+      return `<p class="waiting">${view.toAct === null ? '' : `${escapeHtml(nameOf(view, view.toAct))} réfléchit…`}</p>`;
     }
 
     const parts = [button('FOLD', 'Se coucher <kbd>F</kbd>', 'ghost')];
@@ -337,119 +302,172 @@ export function mountHoldem(root: HTMLElement): () => void {
     return parts.join('');
   }
 
+  function renderJoin(): void {
+    const balance = startingBalance('holdem');
+    stackEl.textContent = formatChips(balance);
+    potEl.textContent = '';
+    setHtml(boardEl, Array.from({ length: 5 }, () => '<div class="card-slot"></div>').join(''));
+    messageEl.textContent = '';
+    setHtml(seatsEl, '');
+    setHtml(logEl, '');
+    setHtml(controlsEl, '');
+    setHtml(
+      joinEl,
+      joinPanelHtml({
+        game: 'holdem',
+        gameLabel: "Texas Hold'em",
+        name: loadPlayerName(),
+        balance,
+        minimum: HOLDEM_TABLE_RULES.minBuyIn,
+        connecting,
+        error: joinError,
+      }),
+    );
+  }
+
   function render(): void {
-    const view = engine.project(state, HUMAN);
+    if (disposed) return;
+    const snapshot = client?.snapshot() ?? null;
+    renderShareBar(snapshot);
+    renderLedger();
+    if (snapshot === null) {
+      renderJoin();
+      return;
+    }
+    last = snapshot;
+    setHtml(joinEl, '');
+    const { view } = snapshot;
+    const mySeat = seatOfViewer(view);
     animator.beginFrame();
 
-    stackEl.textContent = formatChips(view.seats[HUMAN_SEAT]?.stack ?? 0);
-    // Le tapis hors mises engagées : quitter en pleine main abandonne ces jetons.
-    saveBalance('holdem', humanStack());
-    const net = netOf(loadLedger().holdem);
-    ledgerEl.textContent = formatSigned(net);
-    ledgerEl.className = signClass(net);
-    boardEl.innerHTML = Array.from({ length: 5 }, (_, i) => {
-      const card = view.board[i];
-      return card === undefined ? '<div class="card-slot"></div>' : animator.card(`b${view.handNumber}-${i}`, card);
-    }).join('');
+    track(view);
+    renderLedger();
+    if (mySeat !== null) saveBalance('holdem', mySeat.stack);
+    stackEl.textContent = formatChips(mySeat?.stack ?? startingBalance('holdem'));
+
+    setHtml(
+      boardEl,
+      Array.from({ length: 5 }, (_, i) => {
+        const card = view.board[i];
+        return card === undefined ? '<div class="card-slot"></div>' : animator.card(`b${view.handNumber}-${i}`, card);
+      }).join(''),
+    );
     potEl.textContent = potText(view);
-    messageEl.textContent = notice || turnText(view);
-    messageEl.dataset['tone'] = notice ? 'error' : 'info';
-    seatsEl.innerHTML = view.seats.map((seat, index) => renderSeat(view, seat, index)).join('');
-    controlsEl.innerHTML = renderControls(view);
-    logEl.innerHTML = log.map((line) => `<li>${escapeHtml(line)}</li>`).join('');
+
+    const closed = client?.isClosed() ?? false;
+    const notice = closed ? 'Le créateur a quitté : la table est fermée.' : (snapshot.notice ?? localMessage);
+    messageEl.textContent = notice ?? turnText(snapshot);
+    messageEl.dataset['tone'] = notice === null ? 'info' : closed || snapshot.notice !== null ? 'error' : 'win';
+    setHtml(seatsEl, view.seats.map((seat, index) => renderSeat(view, seat, index)).join(''));
+    const waiting = snapshot.waiting.length === 0 ? [] : [`En attente de la prochaine main : ${snapshot.waiting.join(', ')}`];
+    setHtml(logEl, [...snapshot.log, ...waiting].map((line) => `<li>${escapeHtml(line)}</li>`).join(''));
     logEl.scrollTop = logEl.scrollHeight;
+    setHtml(controlsEl, closed ? '<a class="btn primary" href="#/holdem">Jouer seul</a>' : renderControls(snapshot));
   }
 
-  function scheduleBot(): void {
-    window.clearTimeout(timer);
-    if (!isHandInProgress(state) || state.seats[state.betting.toAct]?.player.id === HUMAN) return;
-    timer = window.setTimeout(() => {
-      if (!isHandInProgress(state)) return;
-      const actor = state.seats[state.betting.toAct];
-      if (actor === null || actor === undefined || actor.player.id === HUMAN) return;
-      const legal = engine.legalActions(state, actor.player.id);
-      if (legal !== null) act(chooseBotAction(state, actor, legal, rng));
-    }, BOT_DELAY_MS);
-  }
-
-  function act(command: HoldemCommand): void {
-    const stackBefore = humanStack();
-    const result = engine.apply(state, command);
-    if (!result.ok) {
-      notice = result.error.message;
-      render();
-      return;
-    }
-    state = result.value.state;
-    if (command.type === 'START_HAND') handStartStack = state.phase !== 'WAITING' && stackBefore > 0 ? stackBefore : null;
-    if (state.phase === 'HAND_COMPLETE' && handStartStack !== null) {
-      recordResult('holdem', humanStack() - handStartStack);
-      handStartStack = null;
-    }
-    notice = '';
-    for (const event of result.value.events) {
-      const line = describeEvent(event);
-      if (line !== null) pushLog(line);
-    }
+  async function invite(): Promise<void> {
+    if (host === null || share !== null || opening) return;
+    opening = true;
     render();
-    scheduleBot();
+    try {
+      const session = await shareTable('holdem', host, render);
+      if (disposed) {
+        session.close();
+        return;
+      }
+      share = session;
+      localMessage = 'Table ouverte : copiez le lien et envoyez-le à vos amis. Les bots leur cèdent leur siège.';
+    } catch (error) {
+      localMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      opening = false;
+      render();
+    }
   }
 
-  function startHand(): void {
-    // Joueur ruiné, donc debout : aucune main ne se joue sans lui.
-    if ((state.seats[HUMAN_SEAT] ?? null) === null) {
+  async function join(): Promise<void> {
+    if (tableId === null || connecting || client !== null) return;
+    connecting = true;
+    joinError = null;
+    render();
+    try {
+      const joined = await joinSharedTable<HoldemSnapshot, HoldemTableCommand>('holdem', tableId, loadPlayerName(), startingBalance('holdem'));
+      if (disposed) {
+        joined.close();
+        return;
+      }
+      client = joined;
+      unsubscribe = joined.subscribe(render);
+    } catch (error) {
+      joinError = error instanceof Error ? error.message : String(error);
+    } finally {
+      connecting = false;
+      render();
+    }
+  }
+
+  function copyLink(): void {
+    if (share === null) return;
+    shareEl.querySelector<HTMLInputElement>('[data-share-link]')?.select();
+    navigator.clipboard.writeText(share.link).then(
+      () => {
+        localMessage = 'Lien copié : il ne reste qu’à l’envoyer.';
+        render();
+      },
+      () => {
+        localMessage = 'Copie impossible : sélectionnez le lien et copiez-le à la main.';
+        render();
+      },
+    );
+  }
+
+  function refill(): void {
+    if (!claimDailyRefill('holdem')) {
+      localMessage = REFILL_USED_MESSAGE;
       render();
       return;
     }
-    // Recave automatique des bots éliminés, pour garder une table pleine.
-    for (const seat of state.seats) {
-      if (seat !== null && seat.seatIndex !== HUMAN_SEAT && seat.stack === 0) {
-        state = expectOk(engine.apply(state, { type: 'LEAVE_SEAT', playerId: seat.player.id })).state;
-        state = sitDown(engine, state, seat.seatIndex);
-        pushLog(`${seat.player.displayName} recave ${formatChips(BUY_IN)} jetons.`);
-      }
-    }
-    act({ type: 'START_HAND' });
+    const seat = last === null ? null : seatOfViewer(last.view);
+    const bankroll = (seat === null ? startingBalance('holdem') : seat.stack) + DAILY_REFILL;
+    saveBalance('holdem', bankroll);
+    client?.send({ type: 'REBUY', bankroll });
+    localMessage = REFILL_DONE_MESSAGE;
+    render();
   }
 
   function onClick(event: MouseEvent): void {
     if (!(event.target instanceof Element)) return;
     const button = event.target.closest<HTMLButtonElement>('button[data-action]');
     if (button === null || button.disabled) return;
-
-    const action = button.dataset['action'];
+    const action = button.dataset['action'] ?? '';
     switch (action) {
       case 'NEXT_HAND':
-        startHand();
+        send({ type: 'NEXT_HAND' });
         break;
       case 'REBUY':
-        if (!claimDailyRefill('holdem')) {
-          notice = REFILL_USED_MESSAGE;
-          render();
-          break;
-        }
-        window.clearTimeout(timer);
-        state = newTable(engine, humanStack() + DAILY_REFILL);
-        log = [];
-        pushLog(REFILL_DONE_MESSAGE);
-        startHand();
-        break;
-      case 'FOLD':
-      case 'CHECK':
-      case 'CALL':
-      case 'ALL_IN':
-        act({ type: action, playerId: HUMAN });
+        refill();
         break;
       case 'BET':
-        act({ type: 'BET', playerId: HUMAN, amount: chips(raiseTo) });
+        send({ type: 'BET', amount: raiseTo });
         break;
       case 'RAISE':
-        act({ type: 'RAISE', playerId: HUMAN, raiseTo: chips(raiseTo) });
+        send({ type: 'RAISE', raiseTo });
         break;
       case 'PRESET':
         raiseTo = Number(button.dataset['value']);
         render();
         break;
+      case 'INVITE':
+        void invite();
+        break;
+      case 'COPY_LINK':
+        copyLink();
+        break;
+      case 'JOIN':
+        void join();
+        break;
+      default:
+        if (isSimpleBettingAction(action)) send({ type: action });
     }
   }
 
@@ -458,6 +476,13 @@ export function mountHoldem(root: HTMLElement): () => void {
     raiseTo = Number(event.target.value);
     const label = root.querySelector('[data-raise-label]');
     if (label !== null) label.textContent = formatChips(raiseTo);
+  }
+
+  function onChange(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement) || !event.target.matches('[data-player-name]')) return;
+    const name = savePlayerName(event.target.value);
+    event.target.value = name;
+    client?.send({ type: 'RENAME', name });
   }
 
   function onKey(event: KeyboardEvent): void {
@@ -475,42 +500,77 @@ export function mountHoldem(root: HTMLElement): () => void {
     }
   }
 
-  setCheatTarget({
-    games: ['holdem'],
-    getBalance: humanStack,
-    setBalance: (_game, amount) => {
-      const seat = state.seats[HUMAN_SEAT];
-      if (seat === null || seat === undefined) {
-        // Joueur ruiné, donc debout (aucune main ne tourne) : le nouveau solde le rassoit.
-        if (amount < RULES.minBuyIn) return `Il faut au moins ${formatChips(RULES.minBuyIn)} jetons pour s'asseoir.`;
-        state = sitDown(engine, state, HUMAN_SEAT, amount);
-        render();
+  /** Cartes communes à venir, en sautant la carte brûlée avant chaque street. */
+  function foresee(): string {
+    if (host === null) return GUEST_CHEAT_LOCK;
+    const current = host.state;
+    if (!isHandInProgress(current)) return 'Aucune main en cours : le paquet sera mélangé à la prochaine donne.';
+    const streets = UPCOMING_STREETS[current.phase];
+    if (streets.length === 0) return 'Toutes les cartes communes sont déjà sur la table.';
+    let index = current.deck.nextIndex;
+    return streets
+      .map((street) => {
+        const count = street === 'FLOP' ? 3 : 1;
+        const drawn = current.deck.cards.slice(index + 1, index + 1 + count);
+        index += 1 + count;
+        return `${STREET_LABELS[street]} : ${drawn.map(cardText).join(' ')}`;
+      })
+      .join(' · ');
+  }
+
+  if (host !== null) {
+    const table = host;
+    setCheatTarget({
+      games: ['holdem'],
+      getBalance: () => hostSeat()?.stack ?? 0,
+      setBalance: (_game, amount) => {
+        const value = Number(amount);
+        const seat = hostSeat();
+        if (seat === null) {
+          // Créateur ruiné, donc debout (aucune main ne tourne) : le nouveau tapis le rassoit.
+          if (value < HOLDEM_TABLE_RULES.minBuyIn) return `Il faut au moins ${formatChips(HOLDEM_TABLE_RULES.minBuyIn)} jetons pour s'asseoir.`;
+          table.command(HOLDEM_HOST, { type: 'REBUY', bankroll: value });
+          return null;
+        }
+        if (isHandInProgress(table.state)) return 'Main en cours : le tapis se modifie entre deux mains.';
+        // Un joueur ruiné est mis à l'écart par le moteur : on le rassoit s'il retrouve des jetons.
+        const status = seat.status === 'SITTING_OUT' && value > 0 ? 'IN_HAND' : seat.status;
+        const credited: PokerSeat = { ...seat, stack: chips(value), status };
+        table.replaceState({ ...table.state, seats: table.state.seats.map((current) => (current === seat ? credited : current)) });
         return null;
-      }
-      if (isHandInProgress(state)) return 'Main en cours : le tapis se modifie entre deux mains.';
-      // Un joueur ruiné est mis à l'écart par le moteur : on le rassoit s'il retrouve des jetons.
-      const status = seat.status === 'SITTING_OUT' && amount > 0 ? 'IN_HAND' : seat.status;
-      state = { ...state, seats: state.seats.with(HUMAN_SEAT, { ...seat, stack: chips(amount), status }) };
-      render();
-      return null;
-    },
-    refresh: render,
-    foresee,
-  });
+      },
+      refresh: render,
+      foresee,
+    });
+  } else {
+    setCheatTarget({ games: [], getBalance: () => 0, setBalance: () => GUEST_CHEAT_LOCK, refresh: render, locked: GUEST_CHEAT_LOCK });
+  }
 
   root.addEventListener('click', onClick);
   root.addEventListener('input', onInput);
+  root.addEventListener('change', onChange);
   window.addEventListener('keydown', onKey);
+  if (client !== null) {
+    unsubscribe = client.subscribe(render);
+    client.send({ type: 'NEXT_HAND' });
+  }
   render();
-  startHand();
 
   return () => {
-    window.clearTimeout(timer);
+    disposed = true;
     // Quitter en pleine main abandonne les jetons déjà engagés.
-    if (handStartStack !== null && isHandInProgress(state)) recordResult('holdem', humanStack() - handStartStack);
+    if (tracked !== null && last !== null && !(client?.isClosed() ?? false)) {
+      const seat = seatOfViewer(last.view);
+      if (last.view.handNumber === tracked.hand && last.view.phase !== 'HAND_COMPLETE') recordResult('holdem', (seat?.stack ?? 0) - tracked.start);
+    }
+    unsubscribe();
+    share?.close();
+    client?.close();
+    host?.dispose();
     setCheatTarget(null);
     root.removeEventListener('click', onClick);
     root.removeEventListener('input', onInput);
+    root.removeEventListener('change', onChange);
     window.removeEventListener('keydown', onKey);
   };
 }
