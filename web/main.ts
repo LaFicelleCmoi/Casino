@@ -5,12 +5,13 @@ import {
   loadLedger,
   netOf,
   saveBalance,
-  startingBalance,
+  startingBigBalance,
   totalOf,
   type GameKey,
   type GameStats,
   type Ledger,
 } from './money-ledger.js';
+import { isTableId } from './net/peer-link.js';
 import { mountRoulette } from './roulette-view.js';
 import { mountScratch } from './scratch-view.js';
 import { mountRacing } from './racing-view.js';
@@ -62,10 +63,10 @@ function ledgerHtml(ledger: Ledger): string {
     </div>`;
 }
 
-/** Solde avec lequel on s'assiérait à la table. */
-const lobbyBalance = (game: GameKey): number => startingBalance(game);
+/** Solde avec lequel on s'assiérait à la table, sans limite de taille (Roulette). */
+const lobbyBalance = (game: GameKey): bigint => startingBigBalance(game);
 
-const balanceHtml = (amount: number): string =>
+const balanceHtml = (amount: bigint): string =>
   `<span class="tile-balance">Votre solde <strong>${formatChips(amount)} jetons</strong></span>`;
 
 function lobbyHtml(): string {
@@ -80,21 +81,21 @@ function lobbyHtml(): string {
         <a class="tile tile-blackjack" href="#/blackjack">
           <span class="tile-suits" aria-hidden="true">♠ ♥</span>
           <h2>Blackjack</h2>
-          <p>6 decks · croupier S17 · Blackjack 3:2 · split, double, assurance</p>
+          <p>Plusieurs mains à la fois · table partagée jusqu'à 8 joueurs via un lien · split, double, assurance</p>
           ${balanceHtml(lobbyBalance('blackjack'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
         <a class="tile tile-holdem" href="#/holdem">
           <span class="tile-suits" aria-hidden="true">♣ ♦</span>
           <h2>Texas Hold'em</h2>
-          <p>No-Limit 5/10 · 5 adversaires IA · side pots et départage par kickers</p>
+          <p>No-Limit 5/10 · jusqu'à 8 vrais joueurs via un lien · bots IA sur les sièges libres</p>
           ${balanceHtml(lobbyBalance('holdem'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
         <a class="tile tile-roulette" href="#/roulette">
           <span class="tile-suits" aria-hidden="true">◉ 0</span>
           <h2>Roulette</h2>
-          <p>Cylindre européen à un zéro · pleins 35:1, chevaux, carrés, sixains · chances simples</p>
+          <p>Cylindre européen à un zéro · pleins 35:1, chevaux, carrés, sixains · mises sans aucune limite</p>
           ${balanceHtml(lobbyBalance('roulette'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
@@ -165,36 +166,43 @@ function mountLobby(root: HTMLElement): Unmount {
 
 let unmount: Unmount = () => {};
 
+/** « #/jeu » ou, pour une table partagée, « #/jeu/<identifiant de table> » (lien d'invitation). */
+function parseHash(hash: string): { readonly game: string; readonly tableId: string | null } {
+  const [, game = '', tableId] = /^#\/([a-z]+)(?:\/([^/]+))?$/.exec(hash) ?? [];
+  return { game, tableId: tableId !== undefined && isTableId(tableId) ? tableId : null };
+}
+
 function route(): void {
   unmount();
   app.replaceChildren();
   window.scrollTo(0, 0);
-  switch (location.hash) {
-    case '#/blackjack':
-      unmount = mountBlackjack(app);
+  const { game, tableId } = parseHash(location.hash);
+  switch (game) {
+    case 'blackjack':
+      unmount = mountBlackjack(app, tableId);
       break;
-    case '#/holdem':
-      unmount = mountHoldem(app);
+    case 'holdem':
+      unmount = mountHoldem(app, tableId);
       break;
-    case '#/roulette':
+    case 'roulette':
       unmount = mountRoulette(app);
       break;
-    case '#/grattage':
+    case 'grattage':
       unmount = mountScratch(app);
       break;
-    case '#/courses':
+    case 'courses':
       unmount = mountRacing(app);
       break;
-    case '#/plinko':
+    case 'plinko':
       unmount = mountPlinko(app);
       break;
-    case '#/mines':
+    case 'mines':
       unmount = mountMines(app);
       break;
-    case '#/hilo':
+    case 'hilo':
       unmount = mountHilo(app);
       break;
-    case '#/pachinko':
+    case 'pachinko':
       unmount = mountPachinko(app);
       break;
     default:
