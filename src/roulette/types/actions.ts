@@ -1,4 +1,4 @@
-import type { Chips, PhaseGuard, PlayerCommand, SeatIndex } from '../../core/index.js';
+import type { BigChips, PhaseGuard, PlayerCommand, SeatIndex } from '../../core/index.js';
 import type { BetId, BetSelection } from './bet.js';
 import type { RoulettePhase } from './state.js';
 
@@ -6,10 +6,10 @@ export type RoulettePlayerAction =
   | (PlayerCommand<'SIT_DOWN'> & {
       readonly seatIndex: SeatIndex;
       readonly displayName: string;
-      readonly buyIn: Chips;
+      readonly buyIn: BigChips;
     })
   | PlayerCommand<'LEAVE_SEAT'>
-  | (PlayerCommand<'PLACE_BET'> & { readonly bet: BetSelection; readonly amount: Chips })
+  | (PlayerCommand<'PLACE_BET'> & { readonly bet: BetSelection; readonly amount: BigChips })
   | (PlayerCommand<'REMOVE_BET'> & { readonly betId: BetId })
   | PlayerCommand<'CLEAR_BETS'>;
 
