@@ -2,13 +2,18 @@ import type { ChipRange, GameEngine, GameTypes, PlayerId, SeatIndex, VisibleCard
 import type { BlackjackRules } from '../rules.js';
 import type { BlackjackCommand, BlackjackPlayerActionType } from './actions.js';
 import type { BlackjackEvent, BlackjackViewEvent } from './events.js';
-import type { BlackjackScore, HandSettlement } from './hand.js';
+import type { BlackjackScore, HandSettlement, InsuranceSettlement } from './hand.js';
 import type { BlackjackPhase, BlackjackSeat, BlackjackState, HandCursor } from './state.js';
 
 export interface BlackjackLegalActions {
   readonly actions: readonly BlackjackPlayerActionType[];
-  /** Bornes de mise si PLACE_BET est permis (min/max de table, plafonné par le bankroll). */
+  /** Bornes de mise sur la première case si PLACE_BET est permis (min/max de table, plafonné par le bankroll). */
   readonly betRange: ChipRange | null;
+  /**
+   * Pendant BETTING : bornes par case, une entrée par case déjà misée plus une pour ouvrir la suivante.
+   * null = case au plafond, fonds insuffisants ou aucune place libre pour une case de plus. Vide hors BETTING.
+   */
+  readonly boxRanges: readonly (ChipRange | null)[];
 }
 
 /** Ce que reçoit un client : ni l'ordre du sabot, ni la hole card avant révélation. */
@@ -19,12 +24,15 @@ export interface BlackjackTableView {
   readonly viewer: PlayerId | null;
   readonly viewerSeat: SeatIndex | null;
   readonly seats: readonly (BlackjackSeat | null)[];
+  /** Places encore disponibles : rules.seatCount moins un siège par joueur et une place par case supplémentaire. */
+  readonly freePlaces: number;
   readonly dealerCards: readonly VisibleCard[];
   /** Score de la seule carte visible tant que la hole card est cachée. */
   readonly dealerScore: BlackjackScore | null;
   readonly shoe: { readonly cardsRemaining: number; readonly reshufflePending: boolean };
   readonly activeHand: HandCursor | null;
   readonly settlements: readonly HandSettlement[];
+  readonly insuranceSettlements: readonly InsuranceSettlement[];
   readonly legalActions: BlackjackLegalActions;
 }
 
