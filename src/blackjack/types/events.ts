@@ -13,7 +13,7 @@ export type CardTarget =
 export type BlackjackEvent<C extends Card | VisibleCard = Card> =
   | { readonly type: 'PLAYER_SAT_DOWN'; readonly seatIndex: SeatIndex; readonly playerId: PlayerId; readonly bankroll: Chips }
   | { readonly type: 'PLAYER_LEFT'; readonly seatIndex: SeatIndex; readonly playerId: PlayerId }
-  | { readonly type: 'BET_PLACED'; readonly seatIndex: SeatIndex; readonly amount: Chips }
+  | { readonly type: 'BET_PLACED'; readonly seatIndex: SeatIndex; readonly box: number; readonly amount: Chips }
   | { readonly type: 'BET_CLEARED'; readonly seatIndex: SeatIndex }
   | { readonly type: 'SHOE_SHUFFLED'; readonly deckCount: number }
   | { readonly type: 'CARD_DEALT'; readonly target: CardTarget; readonly card: C; readonly faceUp: boolean }
