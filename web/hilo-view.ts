@@ -282,7 +282,7 @@ export function mountHilo(root: HTMLElement): () => void {
     games: ['hilo'],
     getBalance: () => state.player.bankroll,
     setBalance: (_game, amount) => {
-      state = { ...state, player: { ...state.player, bankroll: chips(amount) } };
+      state = { ...state, player: { ...state.player, bankroll: chips(Number(amount)) } };
       render();
       return null;
     },
