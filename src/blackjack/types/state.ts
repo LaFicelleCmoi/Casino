@@ -26,9 +26,12 @@ export interface BlackjackSeat {
   readonly player: PlayerProfile;
   /** Jetons disponibles. Toute mise en est débitée dès qu'elle est posée : bankroll + jetons en jeu reste constant. */
   readonly bankroll: Chips;
-  /** Mise posée pendant BETTING, convertie en première main à la distribution. */
-  readonly pendingBet: Chips;
-  /** Mains parallèles, dans l'ordre de jeu : 1 à la donne, jusqu'à rules.maxHandsPerSeat après splits. */
+  /**
+   * Mises posées pendant BETTING, une par case : chaque case devient une main à la distribution.
+   * Toute case au-delà de la première occupe une place libre de la table (voir BlackjackTableView.freePlaces).
+   */
+  readonly pendingBets: readonly Chips[];
+  /** Mains parallèles, dans l'ordre de jeu : une par case à la donne, puis celles créées par les splits (au plus rules.maxHandsPerSeat par case). */
   readonly hands: readonly PlayerHand[];
   readonly insurance: SeatInsurance;
 }
