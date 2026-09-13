@@ -14,18 +14,20 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-export function formatChips(amount: number): string {
+/** Accepte aussi les bigint : la Roulette sans limite et le bilan dépassent les entiers sûrs. */
+export function formatChips(amount: number | bigint): string {
   return amount.toLocaleString('fr-FR');
 }
 
-export function formatSigned(amount: number): string {
-  if (amount === 0) return '0';
-  return amount > 0 ? `+${formatChips(amount)}` : `−${formatChips(-amount)}`;
+export function formatSigned(amount: number | bigint): string {
+  if (amount === 0 || amount === 0n) return '0';
+  if (amount > 0) return `+${formatChips(amount)}`;
+  return `−${formatChips(typeof amount === 'bigint' ? -amount : -amount)}`;
 }
 
 /** Classe de couleur pour un montant net : vert si positif, rouge si négatif. */
-export function signClass(amount: number): string {
-  if (amount === 0) return '';
+export function signClass(amount: number | bigint): string {
+  if (amount === 0 || amount === 0n) return '';
   return amount > 0 ? 'pos' : 'neg';
 }
 
@@ -83,6 +85,18 @@ export class DealAnimator {
     const delay = isNew ? Math.min(this.#queued++, 8) * 110 : 0;
     return cardHtml(card, { animate: isNew, delay, small, xray });
   }
+}
+
+const renderedHtml = new WeakMap<Element, string>();
+
+/**
+ * Remplace le contenu d'un élément seulement s'il a changé. À une table partagée, les rafraîchissements venus
+ * des autres joueurs ne recréent donc pas le bouton sur lequel on est en train de cliquer.
+ */
+export function setHtml(element: Element, html: string): void {
+  if (renderedHtml.get(element) === html) return;
+  renderedHtml.set(element, html);
+  element.innerHTML = html;
 }
 
 export function queryIn<T extends Element>(root: ParentNode, selector: string): T {
