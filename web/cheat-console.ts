@@ -5,20 +5,25 @@ import { formatChips, queryIn } from './ui.js';
 export interface CheatTarget {
   /** Jeux dont le solde peut être modifié depuis cet écran. */
   readonly games: readonly GameKey[];
-  getBalance(game: GameKey): number;
+  getBalance(game: GameKey): number | bigint;
   /** Retourne un message d'erreur si la modification est refusée pour l'instant. */
-  setBalance(game: GameKey, amount: number): string | null;
+  setBalance(game: GameKey, amount: bigint): string | null;
   /** Redessine l'écran, par exemple après avoir activé les rayons X. */
   refresh(): void;
   /** Décrit les prochaines cartes ; absent hors d'une table. */
   foresee?(): string;
   /** Codes propres à un écran (ex : DRSZONE) : message si le code est reconnu, null sinon. */
   runCode?(code: string): string | null;
+  /** Présent quand l'écran refuse toute triche (table partagée rejointe en invité) : message affiché à chaque code. */
+  readonly locked?: string;
 }
 
 type Tone = 'cmd' | 'ok' | 'error' | 'info';
 
-const MAX_AMOUNT = 1_000_000_000_000;
+/** Plafond des jeux à entiers sûrs ; la Roulette sans limite n'en a aucun. */
+const MAX_AMOUNT = 1_000_000_000_000n;
+const UNLIMITED_GAMES: ReadonlySet<GameKey> = new Set(['roulette']);
+const ALWAYS_ALLOWED = new Set(['aide', 'help', 'effacer', 'clear']);
 const GAME_ALIASES: Readonly<Record<string, GameKey>> = {
   bj: 'blackjack',
   blackjack: 'blackjack',
@@ -49,7 +54,7 @@ const GAME_LABELS: Readonly<Record<GameKey, string>> = {
 
 const HELP = [
   'aide                         liste des codes',
-  'argent <montant> [jeu]       fixe le solde (bj, holdem, roulette, grattage, courses, plinko, mines, hilo, pachinko)',
+  'argent <montant> [jeu]       fixe le solde (bj, holdem, roulette, grattage, courses, plinko, mines, hilo, pachinko ; roulette sans limite)',
   'ajouter <montant> [jeu]      ajoute des jetons (négatif pour en retirer)',
   'motherlode [jeu]             +50 000 jetons',
   'rosebud [jeu]                +1 000 jetons',
@@ -74,10 +79,10 @@ export function setCheatTarget(next: CheatTarget | null): void {
 
 export const xrayEnabled = (): boolean => xray;
 
-function parseAmount(raw: string | undefined): number | null {
+function parseAmount(raw: string | undefined): bigint | null {
   if (raw === undefined) return null;
-  const value = Number(raw.replace(/_/g, ''));
-  return Number.isSafeInteger(value) ? value : null;
+  const digits = raw.replace(/_/g, '');
+  return /^-?\d+$/.test(digits) ? BigInt(digits) : null;
 }
 
 export function mountCheatConsole(): void {
@@ -123,7 +128,7 @@ export function mountCheatConsole(): void {
     else input.blur();
   }
 
-  function changeBalance(gameArg: string | undefined, compute: (current: number) => number): void {
+  function changeBalance(gameArg: string | undefined, compute: (current: bigint) => bigint): void {
     const screen = target;
     if (screen === null) return print('Aucun écran actif.', 'error');
     let games: readonly GameKey[] = screen.games;
@@ -134,7 +139,9 @@ export function mountCheatConsole(): void {
       games = [game];
     }
     for (const game of games) {
-      const amount = Math.min(MAX_AMOUNT, Math.max(0, compute(screen.getBalance(game))));
+      let amount = compute(BigInt(screen.getBalance(game)));
+      if (amount < 0n) amount = 0n;
+      if (!UNLIMITED_GAMES.has(game) && amount > MAX_AMOUNT) amount = MAX_AMOUNT;
       const error = screen.setBalance(game, amount);
       if (error === null) print(`${GAME_LABELS[game]} : solde fixé à ${formatChips(amount)} jetons.`, 'ok');
       else print(error, 'error');
@@ -143,7 +150,9 @@ export function mountCheatConsole(): void {
 
   function run(line: string): void {
     const [name = '', ...args] = line.trim().split(/\s+/);
-    switch (name.toLowerCase()) {
+    const code = name.toLowerCase();
+    if (target?.locked !== undefined && !ALWAYS_ALLOWED.has(code)) return print(target.locked, 'error');
+    switch (code) {
       case 'aide':
       case 'help':
         for (const help of HELP) print(help, 'info');
@@ -163,10 +172,10 @@ export function mountCheatConsole(): void {
         break;
       }
       case 'motherlode':
-        changeBalance(args[0], (current) => current + 50_000);
+        changeBalance(args[0], (current) => current + 50_000n);
         break;
       case 'rosebud':
-        changeBalance(args[0], (current) => current + 1_000);
+        changeBalance(args[0], (current) => current + 1_000n);
         break;
       case 'rayons-x':
       case 'xray':
@@ -184,7 +193,7 @@ export function mountCheatConsole(): void {
         output.replaceChildren();
         break;
       default: {
-        const answer = target?.runCode?.(name.toLowerCase()) ?? null;
+        const answer = target?.runCode?.(code) ?? null;
         if (answer === null) print(`Code inconnu : ${name}. Tapez « aide ».`, 'error');
         else print(answer, 'ok');
       }
