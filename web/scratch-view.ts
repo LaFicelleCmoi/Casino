@@ -282,7 +282,7 @@ export function mountScratch(root: HTMLElement): () => void {
     getBalance: () => state.player.bankroll,
     setBalance: (_game, amount) => {
       if (busy) return 'Patientez, la gomme brûle encore !';
-      state = { ...state, player: { ...state.player, bankroll: chips(amount) } };
+      state = { ...state, player: { ...state.player, bankroll: chips(Number(amount)) } };
       sync();
       return null;
     },
