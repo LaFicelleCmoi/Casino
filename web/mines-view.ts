@@ -261,7 +261,7 @@ export function mountMines(root: HTMLElement): () => void {
     games: ['mines'],
     getBalance: () => state.player.bankroll,
     setBalance: (_game, amount) => {
-      state = { ...state, player: { ...state.player, bankroll: chips(amount) } };
+      state = { ...state, player: { ...state.player, bankroll: chips(Number(amount)) } };
       render();
       return null;
     },
