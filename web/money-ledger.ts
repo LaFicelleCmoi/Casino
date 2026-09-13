@@ -2,11 +2,12 @@
 
 export type GameKey = 'blackjack' | 'holdem' | 'roulette' | 'grattage' | 'courses' | 'plinko' | 'mines' | 'hilo' | 'pachinko';
 
+/** Montants en bigint : la Roulette sans limite dépasse les entiers sûrs, et le bilan doit rester exact. */
 export interface GameStats {
   /** Somme des gains nets des manches gagnantes. */
-  readonly won: number;
+  readonly won: bigint;
   /** Somme (positive) des pertes nettes des manches perdantes. */
-  readonly lost: number;
+  readonly lost: bigint;
   readonly rounds: number;
 }
 
@@ -18,9 +19,10 @@ export const DEFAULT_BALANCE = 1_000;
 const LEDGER_KEY = 'casino-engine:ledger:v1';
 const BALANCE_KEY = 'casino-engine:balance:v1';
 const GAMES: readonly GameKey[] = ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko'];
-const EMPTY: GameStats = { won: 0, lost: 0, rounds: 0 };
+const EMPTY: GameStats = { won: 0n, lost: 0n, rounds: 0 };
+const SAFE_MAX = BigInt(Number.MAX_SAFE_INTEGER);
 
-export const netOf = (stats: GameStats): number => stats.won - stats.lost;
+export const netOf = (stats: GameStats): bigint => stats.won - stats.lost;
 
 export function totalOf(ledger: Ledger): GameStats {
   return GAMES.reduce<GameStats>(
@@ -34,6 +36,18 @@ export function totalOf(ledger: Ledger): GameStats {
 }
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+/** Montant relu du stockage : entier JSON (format historique) ou chaîne décimale (au-delà des entiers sûrs). */
+function parseAmount(value: unknown): bigint | null {
+  if (isCount(value)) return BigInt(value);
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
+  return null;
+}
+
+/** Nombre JSON tant qu'il reste exact, chaîne décimale au-delà : JSON.stringify refuse les bigint. */
+function storedAmount(value: bigint): number | string {
+  return value <= SAFE_MAX ? Number(value) : value.toString();
+}
 
 /** Le stockage peut être indisponible (navigation privée, cookies bloqués) ou corrompu : on retombe sur `{}`. */
 function readJson(key: string): Record<string, unknown> {
@@ -56,7 +70,9 @@ function writeJson(key: string, value: unknown): void {
 function parseStats(value: unknown): GameStats {
   if (typeof value !== 'object' || value === null) return EMPTY;
   const { won, lost, rounds } = value as Record<string, unknown>;
-  return isCount(won) && isCount(lost) && isCount(rounds) ? { won, lost, rounds } : EMPTY;
+  const wonAmount = parseAmount(won);
+  const lostAmount = parseAmount(lost);
+  return wonAmount !== null && lostAmount !== null && isCount(rounds) ? { won: wonAmount, lost: lostAmount, rounds } : EMPTY;
 }
 
 export function loadLedger(): Ledger {
@@ -74,35 +90,54 @@ export function loadLedger(): Ledger {
   };
 }
 
+function writeLedger(ledger: Ledger): void {
+  const stored = GAMES.map((game) => {
+    const { won, lost, rounds } = ledger[game];
+    return [game, { won: storedAmount(won), lost: storedAmount(lost), rounds }] as const;
+  });
+  writeJson(LEDGER_KEY, Object.fromEntries(stored));
+}
+
 /** Enregistre le résultat net (positif = gain, négatif = perte) d'une manche terminée. */
-export function recordResult(game: GameKey, net: number): Ledger {
+export function recordResult(game: GameKey, net: number | bigint): Ledger {
+  const delta = BigInt(net);
   const ledger = loadLedger();
   const stats = ledger[game];
   const next: Ledger = {
     ...ledger,
     [game]: {
-      won: stats.won + Math.max(net, 0),
-      lost: stats.lost + Math.max(-net, 0),
+      won: stats.won + (delta > 0n ? delta : 0n),
+      lost: stats.lost + (delta < 0n ? -delta : 0n),
       rounds: stats.rounds + 1,
     },
   };
-  writeJson(LEDGER_KEY, next);
+  writeLedger(next);
   return next;
 }
 
-/** Solde sauvegardé du jeu, ou null s'il n'a jamais été joué. */
-export function loadBalance(game: GameKey): number | null {
-  const value = readJson(BALANCE_KEY)[game];
-  return isCount(value) ? value : null;
+/** Solde sauvegardé du jeu, en précision arbitraire, ou null s'il n'a jamais été joué. */
+export function loadBigBalance(game: GameKey): bigint | null {
+  return parseAmount(readJson(BALANCE_KEY)[game]);
 }
 
-export function saveBalance(game: GameKey, amount: number): void {
-  writeJson(BALANCE_KEY, { ...readJson(BALANCE_KEY), [game]: amount });
+/** Solde sauvegardé d'un jeu à entiers sûrs (plafonné à Number.MAX_SAFE_INTEGER), ou null s'il n'a jamais été joué. */
+export function loadBalance(game: GameKey): number | null {
+  const value = loadBigBalance(game);
+  return value === null ? null : Number(value < SAFE_MAX ? value : SAFE_MAX);
+}
+
+export function saveBalance(game: GameKey, amount: number | bigint): void {
+  writeJson(BALANCE_KEY, { ...readJson(BALANCE_KEY), [game]: storedAmount(BigInt(amount)) });
 }
 
 /** Solde avec lequel s'asseoir : le solde sauvegardé, même nul, ou DEFAULT_BALANCE à la première visite. */
 export function startingBalance(game: GameKey): number {
   return loadBalance(game) ?? DEFAULT_BALANCE;
+}
+
+/** Variante sans limite de startingBalance, pour la Roulette et l'affichage du lobby. */
+export function startingBigBalance(game: GameKey): bigint {
+  return loadBigBalance(game) ?? BigInt(DEFAULT_BALANCE);
 }
 
 /** Jetons récupérables une fois par jour dans chaque jeu, quand le solde ne permet plus de jouer. */
