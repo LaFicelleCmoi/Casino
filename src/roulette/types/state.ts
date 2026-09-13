@@ -1,4 +1,4 @@
-import type { Chips, PlayerProfile, SeatIndex } from '../../core/index.js';
+import type { BigChips, PlayerProfile, SeatIndex } from '../../core/index.js';
 import type { RouletteRules } from '../rules.js';
 import type { RouletteNumber, SpinOutcome } from '../wheel/pockets.js';
 import type { WheelSpin } from '../wheel/roulette-wheel.js';
@@ -16,7 +16,7 @@ export interface RouletteSeat {
   readonly seatIndex: SeatIndex;
   readonly player: PlayerProfile;
   /** Jetons disponibles. Toute mise en est débitée dès la pose : bankroll + Σ bets reste constant jusqu'au lancer. */
-  readonly bankroll: Chips;
+  readonly bankroll: BigChips;
   /** Mises du tour en cours ; vidées au règlement (le détail est conservé dans les settlements). */
   readonly bets: readonly PlacedBet[];
 }
