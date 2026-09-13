@@ -2,6 +2,7 @@ export * from './cards/card.js';
 export * from './cards/shoe.js';
 export * from './cards/shoe-state.js';
 export * from './cards/shuffle.js';
+export * from './money/big-chips.js';
 export * from './money/chip-math.js';
 export * from './money/chips.js';
 export * from './random/crypto-random.js';
