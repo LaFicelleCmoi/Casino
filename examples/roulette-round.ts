@@ -5,7 +5,7 @@
  *   npm run demo:roulette -- 42    tirage rejouable avec la seed « 42 »
  */
 import { webcrypto } from 'node:crypto';
-import { CryptoRandomSource, SeededRandomSource, chips, playerId, type RandomSource } from '../src/core/index.js';
+import { CryptoRandomSource, SeededRandomSource, bigChips, playerId, type RandomSource } from '../src/core/index.js';
 import {
   RouletteController,
   STANDARD_ROULETTE_RULES,
@@ -18,8 +18,8 @@ import {
   type SpinOutcome,
 } from '../src/roulette/index.js';
 
-const CHIP = 10;
-const BUY_IN = 1_000;
+const CHIP = 10n;
+const BUY_IN = 1_000n;
 const COLOR_LABELS: Readonly<Record<PocketColor, string>> = { GREEN: 'vert', RED: 'rouge', BLACK: 'noir' };
 
 const seed = process.argv[2];
@@ -28,8 +28,8 @@ const rng: RandomSource = seed === undefined ? new CryptoRandomSource(webcrypto)
 const controller = new RouletteController(rng);
 const alice = playerId('alice');
 
-const fmt = (amount: number): string => amount.toLocaleString('fr-FR');
-const signed = (amount: number): string => (amount > 0 ? `+${fmt(amount)}` : amount < 0 ? `−${fmt(-amount)}` : '0');
+const fmt = (amount: bigint): string => amount.toLocaleString('fr-FR');
+const signed = (amount: bigint): string => (amount > 0n ? `+${fmt(amount)}` : amount < 0n ? `−${fmt(-amount)}` : '0');
 const labelOf = (betId: BetId): string => controller.catalog.get(betId)?.label ?? betId;
 
 function describeOutcome(outcome: SpinOutcome): string {
@@ -76,7 +76,7 @@ function run(state: RouletteState, command: RouletteCommand): RouletteState {
 }
 
 const placeChip = (state: RouletteState, bet: BetSelection): RouletteState =>
-  run(state, { type: 'PLACE_BET', playerId: alice, bet, amount: chips(CHIP) });
+  run(state, { type: 'PLACE_BET', playerId: alice, bet, amount: bigChips(CHIP) });
 
 const created = controller.createTable(STANDARD_ROULETTE_RULES);
 if (!created.ok) throw created.error;
@@ -87,7 +87,7 @@ let state: RouletteState = run(created.value, {
   playerId: alice,
   seatIndex: 0,
   displayName: 'Alice',
-  buyIn: chips(BUY_IN),
+  buyIn: bigChips(BUY_IN),
 });
 
 console.log('\n« Faites vos jeux. »');
@@ -99,10 +99,10 @@ const refused = controller.apply(state, {
   type: 'PLACE_BET',
   playerId: alice,
   bet: { kind: 'SPLIT', numbers: [1, 5] },
-  amount: chips(CHIP),
+  amount: bigChips(CHIP),
 });
 if (!refused.ok) console.log(`  ✗ ${refused.error.message} (${refused.error.code})`);
-console.log(`  Solde après les mises : ${fmt(state.seats[0]?.bankroll ?? 0)} jetons`);
+console.log(`  Solde après les mises : ${fmt(state.seats[0]?.bankroll ?? 0n)} jetons`);
 
 state = run(state, { type: 'CLOSE_BETS' });
 run(state, { type: 'SPIN' });
