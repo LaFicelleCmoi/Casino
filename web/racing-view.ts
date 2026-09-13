@@ -375,7 +375,7 @@ export function mountRacing(root: HTMLElement): () => void {
     getBalance: () => state.player.bankroll,
     setBalance: (_game, amount) => {
       if (racing) return 'La course est lancée : attendez l’arrivée.';
-      state = { ...state, player: { ...state.player, bankroll: chips(amount) } };
+      state = { ...state, player: { ...state.player, bankroll: chips(Number(amount)) } };
       render();
       return null;
     },
