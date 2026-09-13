@@ -91,9 +91,14 @@ export function canDouble(hand: PlayerHand, rules: BlackjackRules): boolean {
   }
 }
 
+/** Mains nées d'une même case : la main de départ et celles créées par ses splits. */
+function handsInBox(seat: BlackjackSeat, hand: PlayerHand): number {
+  return seat.hands.filter((other) => other.box === hand.box).length;
+}
+
 export function canSplit(seat: BlackjackSeat, hand: PlayerHand, rules: BlackjackRules): boolean {
   if (hand.status !== 'PLAYING' || hand.cards.length !== 2) return false;
-  if (seat.hands.length >= rules.maxHandsPerSeat) return false;
+  if (handsInBox(seat, hand) >= rules.maxHandsPerSeat) return false;
 
   const [first, second] = hand.cards;
   if (first === undefined || second === undefined) return false;
@@ -103,14 +108,14 @@ export function canSplit(seat: BlackjackSeat, hand: PlayerHand, rules: Blackjack
   return matches && !(hand.isSplitAces && !rules.resplitAces);
 }
 
-/** Late surrender : sur les 2 cartes initiales, avant toute autre action, jamais après un split. */
+/** Late surrender : sur les 2 cartes initiales, avant toute autre action, jamais sur une case déjà splittée. */
 export function canSurrender(seat: BlackjackSeat, hand: PlayerHand, rules: BlackjackRules): boolean {
   return (
     rules.surrender === 'LATE' &&
     hand.status === 'PLAYING' &&
     hand.cards.length === 2 &&
     !hand.fromSplit &&
-    seat.hands.length === 1
+    handsInBox(seat, hand) === 1
   );
 }
 
