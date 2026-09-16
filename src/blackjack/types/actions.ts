@@ -23,8 +23,14 @@ export type BlackjackPlayerAction =
   | PlayerCommand<'SPLIT'>
   | PlayerCommand<'SURRENDER'>;
 
+/** Gestes du croupier humain (règle dealerPlay MANUAL). */
+export type BlackjackDealerAction = 'REVEAL_HOLE_CARD' | 'DEALER_HIT' | 'DEALER_STAND';
+
 /** Commandes émises par l'orchestrateur de table (timer, croupier), pas par un joueur. */
-export type BlackjackSystemCommand = { readonly type: 'DEAL' } | { readonly type: 'NEXT_ROUND' };
+export type BlackjackSystemCommand =
+  | { readonly type: 'DEAL' }
+  | { readonly type: 'NEXT_ROUND' }
+  | { readonly type: BlackjackDealerAction };
 
 export type BlackjackCommand = BlackjackPlayerAction | BlackjackSystemCommand;
 
@@ -48,5 +54,8 @@ export const BLACKJACK_COMMAND_PHASES = {
   DOUBLE_DOWN: ['PLAYER_TURNS'],
   SPLIT: ['PLAYER_TURNS'],
   SURRENDER: ['PLAYER_TURNS'],
+  REVEAL_HOLE_CARD: ['DEALER_TURN'],
+  DEALER_HIT: ['DEALER_TURN'],
+  DEALER_STAND: ['DEALER_TURN'],
   NEXT_ROUND: ['ROUND_OVER'],
 } as const satisfies PhaseGuard<BlackjackPhase, BlackjackCommandType>;
