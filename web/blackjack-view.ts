@@ -4,6 +4,7 @@ import {
   dealerShouldHit,
   scoreCards,
   scoreHand,
+  type BlackjackDealerAction,
   type BlackjackSeat,
   type BlackjackState,
   type BlackjackTableView,
@@ -14,7 +15,10 @@ import {
   BLACKJACK_HOST,
   BLACKJACK_TABLE_RULES,
   BlackjackTable,
+  isBotPlayer,
+  isDealerMove,
   isSeatAction,
+  type BlackjackDealerInfo,
   type BlackjackSnapshot,
   type BlackjackTableCommand,
 } from './blackjack-table.js';
@@ -60,6 +64,12 @@ const OUTCOME_LABELS: Record<HandOutcome, string> = {
 
 const KEY_ACTIONS: Readonly<Record<string, string>> = { H: 'HIT', S: 'STAND', D: 'DOUBLE_DOWN', P: 'SPLIT', A: 'SURRENDER' };
 
+const DEALER_LABELS: Record<BlackjackDealerAction, string> = {
+  REVEAL_HOLE_CARD: 'Retourner la carte cachée',
+  DEALER_HIT: 'Tirer une carte',
+  DEALER_STAND: "S'arrêter et régler",
+};
+
 const sum = (values: readonly number[]): number => values.reduce((total, value) => total + value, 0);
 
 function scoreLabel(hand: PlayerHand): string {
@@ -94,9 +104,10 @@ function chipsAtRisk(view: BlackjackTableView): number {
 
 /** Joue sur la table locale (tableId null) ou rejoint la table partagée désignée par le lien. */
 export function mountBlackjack(root: HTMLElement, tableId: string | null = null): () => void {
-  const engine = new BlackjackController(new CryptoRandomSource());
+  const rng = new CryptoRandomSource();
+  const engine = new BlackjackController(rng);
   const animator = new DealAnimator();
-  const host = tableId === null ? new BlackjackTable(engine, loadPlayerName(), startingBalance('blackjack')) : null;
+  const host = tableId === null ? new BlackjackTable(engine, rng, loadPlayerName(), startingBalance('blackjack')) : null;
   let client: Client | null = host === null ? null : localClient(host, BLACKJACK_HOST);
   let share: ShareSession | null = null;
   let opening = false;
@@ -105,6 +116,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   let unsubscribe: () => void = () => {};
   let selectedBox = 0;
   let recordedRound: number | null = null;
+  let recordedBankRound: number | null = null;
   let localMessage: [string, Tone] | null = null;
   let last: BlackjackSnapshot | null = null;
   let lastBarHtml = '';
@@ -117,15 +129,16 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         <h1>Blackjack</h1>
         <div class="topbar-stats">
           <div class="bankroll">Bilan <strong data-ledger></strong></div>
-          <div class="bankroll">Bankroll <strong data-bankroll></strong></div>
+          <div class="bankroll"><span data-bankroll-label>Bankroll</span> <strong data-bankroll></strong></div>
         </div>
       </header>
       <div class="share-bar" data-share></div>
       <section class="felt bj-felt">
         <p class="rules-strip">Le croupier reste sur soft 17 · Blackjack payé 3:2 · Assurance payée 2:1 · 8 places : une main de plus par place libre</p>
         <div class="bj-dealer">
-          <div class="zone-label">Croupier <span class="score-pill" data-dealer-score></span></div>
+          <div class="zone-label"><span data-dealer-name>Croupier</span> <span class="score-pill" data-dealer-score></span></div>
           <div class="card-row" data-dealer-cards></div>
+          <div class="dealer-role" data-dealer-role></div>
         </div>
         <p class="message" data-message aria-live="polite"></p>
         <div class="bj-seats" data-seats></div>
@@ -138,13 +151,20 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   const bankrollEl = queryIn<HTMLElement>(root, '[data-bankroll]');
   const ledgerEl = queryIn<HTMLElement>(root, '[data-ledger]');
   const dealerCardsEl = queryIn<HTMLElement>(root, '[data-dealer-cards]');
+  const dealerNameEl = queryIn<HTMLElement>(root, '[data-dealer-name]');
+  const dealerRoleEl = queryIn<HTMLElement>(root, '[data-dealer-role]');
+  const bankrollLabelEl = queryIn<HTMLElement>(root, '[data-bankroll-label]');
   const dealerScoreEl = queryIn<HTMLElement>(root, '[data-dealer-score]');
   const messageEl = queryIn<HTMLElement>(root, '[data-message]');
   const seatsEl = queryIn<HTMLElement>(root, '[data-seats]');
   const shoeEl = queryIn<HTMLElement>(root, '[data-shoe]');
   const controlsEl = queryIn<HTMLElement>(root, '[data-controls]');
 
-  const isShared = (snapshot: BlackjackSnapshot): boolean => host === null || share !== null || snapshot.players > 1;
+  const isShared = (snapshot: BlackjackSnapshot): boolean =>
+    host === null || share !== null || snapshot.players > 1 || snapshot.dealer !== null;
+  /** Banque du croupier si c'est ce joueur qui tient ce rôle. */
+  const dealerOf = (snapshot: BlackjackSnapshot): BlackjackDealerInfo | null =>
+    snapshot.dealer !== null && snapshot.me === BLACKJACK_HOST ? snapshot.dealer : null;
   const hostSeat = (): BlackjackSeat | null => host?.state.seats.find((seat) => seat?.player.id === BLACKJACK_HOST) ?? null;
 
   function send(command: BlackjackTableCommand): void {
@@ -186,8 +206,53 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     if (net !== null) recordResult('blackjack', net);
   }
 
+  /** Enregistre au bilan la variation de la banque sur chaque manche réglée, une seule fois. */
+  function recordBank(dealer: BlackjackDealerInfo): void {
+    const round = dealer.lastRound;
+    if (recordedBankRound === null) {
+      recordedBankRound = round?.roundNumber ?? -1;
+      return;
+    }
+    if (round === null || round.roundNumber === recordedBankRound) return;
+    recordedBankRound = round.roundNumber;
+    recordResult('blackjack', round.net);
+  }
+
+  function describeDealer(snapshot: BlackjackSnapshot, dealer: BlackjackDealerInfo): [string, Tone] {
+    const { view } = snapshot;
+    const seats = view.seats.filter((seat): seat is BlackjackSeat => seat !== null);
+    switch (view.phase) {
+      case 'BETTING': {
+        if (dealer.bank <= 0) return ['La banque est vide : rechargez-la pour distribuer.', 'error'];
+        const bettors = seats.filter((seat) => seat.pendingBets.length > 0).length;
+        return [`Vous êtes le croupier : ${bettors} joueur${bettors > 1 ? 's' : ''} sur ${seats.length} ${bettors > 1 ? 'ont' : 'a'} misé. Distribuez quand vous voulez.`, 'info'];
+      }
+      case 'INSURANCE':
+        return ['Vous montrez un As : les joueurs décident de l’assurance…', 'info'];
+      case 'PLAYER_TURNS':
+        return [`${view.seats[view.activeHand?.seatIndex ?? -1]?.player.displayName ?? 'Un joueur'} joue…`, 'info'];
+      case 'DEALER_TURN': {
+        const [action] = view.dealerActions;
+        const total = view.dealerScore?.total ?? 0;
+        if (action === 'REVEAL_HOLE_CARD') return ['À vous : retournez la carte cachée.', 'info'];
+        if (action === 'DEALER_HIT') return [`${total} : sous 17, vous devez tirer.`, 'info'];
+        if (view.dealerScore?.isBust) return [`Bust à ${total} : les mains encore en jeu sont payées.`, 'info'];
+        return [total < 17 ? 'Plus aucune main à battre : réglez les mises.' : `Vous restez à ${total} : réglez les mises.`, 'info'];
+      }
+      case 'ROUND_OVER': {
+        const net = dealer.lastRound?.roundNumber === view.roundNumber ? dealer.lastRound.net : 0;
+        const prefix = view.dealerScore?.isBlackjack ? 'Blackjack du croupier ! ' : '';
+        if (net > 0) return [`${prefix}La banque encaisse ${formatChips(net)} jetons.`, 'win'];
+        if (net < 0) return [`${prefix}La banque paie ${formatChips(-net)} jetons.`, 'loss'];
+        return [`${prefix}Manche blanche pour la banque.`, 'info'];
+      }
+    }
+  }
+
   function describe(snapshot: BlackjackSnapshot, mySeat: BlackjackSeat | null, shared: boolean): [string, Tone] {
     const { view } = snapshot;
+    const asDealer = dealerOf(snapshot);
+    if (asDealer !== null) return describeDealer(snapshot, asDealer);
     if (mySeat === null) {
       if (host !== null) return ["Vous n'avez plus de jetons.", 'info'];
       return ['Manche en cours : vous serez assis dès la suivante.', 'info'];
@@ -213,7 +278,10 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         const count = mySeat.hands.length;
         return [count > 1 ? `Main ${active.handIndex + 1} sur ${count} : à vous de jouer.` : 'À vous de jouer.', 'info'];
       }
+      case 'DEALER_TURN':
+        return [`${snapshot.dealer?.name ?? 'Le croupier'} joue sa main…`, 'info'];
       case 'BETTING':
+        if (snapshot.dealer !== null) return ['Misez sur une ou plusieurs cases, puis cliquez sur Prêt : le croupier distribue.', 'info'];
         return [
           shared
             ? 'Misez sur une ou plusieurs cases (« + Main »), puis cliquez sur Prêt.'
@@ -271,8 +339,9 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       .map((seat) => {
         const mine = seat === mySeat;
         const ready = view.phase === 'BETTING' && snapshot.ready.includes(seat.player.id) ? '<span class="badge ready-badge">Prêt</span>' : '';
+        const bot = isBotPlayer(seat.player.id) ? '<span class="badge bot-badge">Bot</span>' : '';
         const head = shared
-          ? `<header class="bj-seat-head"><span class="bj-seat-name">${escapeHtml(seat.player.displayName)}${mine ? ' · vous' : ''}</span>` +
+          ? `<header class="bj-seat-head"><span class="bj-seat-name">${escapeHtml(seat.player.displayName)}${mine ? ' · vous' : ''}</span>${bot}` +
             `<span class="bj-seat-bank">${formatChips(seat.bankroll)}</span>${ready}</header>`
           : '';
         const body = view.phase === 'BETTING' ? renderBoxes(view, seat, mine) : renderHands(view, seat);
@@ -287,8 +356,30 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   function renderControls(snapshot: BlackjackSnapshot, mySeat: BlackjackSeat | null, shared: boolean): string {
     const { view } = snapshot;
     const legal = new Set<string>(view.legalActions.actions);
-    const button = (action: string, label: string, enabled: boolean, variant = '', key = ''): string =>
-      `<button class="btn ${variant}" data-action="${action}" ${enabled ? '' : 'disabled'}>${label}${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+    const button = (action: string, label: string, enabled: boolean, variant = '', key = '', move = ''): string =>
+      `<button class="btn ${variant}" data-action="${action}" ${move ? `data-move="${move}"` : ''} ${enabled ? '' : 'disabled'}>${label}${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+
+    const asDealer = dealerOf(snapshot);
+    if (asDealer !== null) {
+      const seats = view.seats.filter((seat): seat is BlackjackSeat => seat !== null);
+      switch (view.phase) {
+        case 'BETTING': {
+          if (asDealer.bank <= 0) return refillButtonHtml('blackjack');
+          const humans = seats.filter((seat) => !isBotPlayer(seat.player.id));
+          const readyCount = humans.filter((seat) => snapshot.ready.includes(seat.player.id)).length;
+          const status = humans.length === 0 ? '' : `<p class="waiting">Joueurs prêts : ${readyCount}/${humans.length}</p>`;
+          return status + button('DEALER', 'Distribuer', seats.some((seat) => seat.pendingBets.length > 0), 'primary', '↵', 'DEAL');
+        }
+        case 'INSURANCE':
+          return '<p class="waiting">Les joueurs décident de l’assurance…</p>';
+        case 'PLAYER_TURNS':
+          return `<p class="waiting">${escapeHtml(view.seats[view.activeHand?.seatIndex ?? -1]?.player.displayName ?? 'Un joueur')} joue…</p>`;
+        case 'DEALER_TURN':
+          return view.dealerActions.map((action) => button('DEALER', DEALER_LABELS[action], true, 'primary', '↵', action)).join('');
+        case 'ROUND_OVER':
+          return button('NEXT_ROUND', 'Nouvelle manche', true, 'primary', '↵');
+      }
+    }
 
     if (mySeat === null) {
       return host !== null || startingBalance('blackjack') < view.rules.minBet
@@ -310,7 +401,11 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         );
         const readyCount = able.filter((seat) => snapshot.ready.includes(seat.player.id)).length;
         let deal: string;
-        if (!shared || able.length <= 1) deal = button('DEAL', 'Distribuer', pending > 0, 'primary', '↵');
+        if (snapshot.dealer !== null) {
+          deal = snapshot.ready.includes(snapshot.me)
+            ? button('DEAL', 'Prêt ✓ · le croupier distribue', false, 'primary')
+            : button('DEAL', pending > 0 ? 'Prêt' : 'Passer la manche', true, 'primary', '↵');
+        } else if (!shared || able.length <= 1) deal = button('DEAL', 'Distribuer', pending > 0, 'primary', '↵');
         else if (snapshot.ready.includes(snapshot.me)) deal = button('DEAL', `Prêt ✓ ${readyCount}/${able.length}`, false, 'primary');
         else deal = button('DEAL', `${pending > 0 ? 'Prêt' : 'Passer la manche'} · ${readyCount}/${able.length}`, true, 'primary', '↵');
         return `<div class="chip-rack">${rack}</div>${button('CLEAR_BET', 'Effacer', legal.has('CLEAR_BET'), 'ghost')}${deal}`;
@@ -332,9 +427,22 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
           .map(({ action, label, key }) => button(action, label, legal.has(action), action === 'STAND' ? 'primary' : '', key))
           .join('');
       }
+      case 'DEALER_TURN':
+        return `<p class="waiting">${escapeHtml(snapshot.dealer?.name ?? 'Le croupier')} joue sa main…</p>`;
       case 'ROUND_OVER':
-        return button('NEXT_ROUND', 'Nouvelle manche', true, 'primary', '↵');
+        return snapshot.dealer !== null
+          ? '<p class="waiting">Le croupier lance la manche suivante.</p>'
+          : button('NEXT_ROUND', 'Nouvelle manche', true, 'primary', '↵');
     }
+  }
+
+  /** Bouton de changement de rôle du créateur, actif entre deux manches. */
+  function roleButton(view: BlackjackTableView, dealerMode: boolean): string {
+    const betweenRounds = view.phase === 'BETTING' || view.phase === 'ROUND_OVER';
+    return (
+      `<button class="btn ghost dealer-toggle" data-action="DEALER_MODE" data-enabled="${!dealerMode}" ${betweenRounds ? '' : 'disabled'}>` +
+      `${dealerMode ? 'Redevenir joueur' : 'Devenir croupier'}</button>`
+    );
   }
 
   function renderJoin(): void {
@@ -382,10 +490,22 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       selectedBox = Math.min(selectedBox, Math.max(0, maxBox - ((view.legalActions.boxRanges[maxBox] ?? null) === null ? 1 : 0)));
     }
 
-    if (mySeat !== null) saveBalance('blackjack', mySeat.bankroll + sum(mySeat.pendingBets));
+    const asDealer = dealerOf(snapshot);
+    if (asDealer !== null) {
+      saveBalance('blackjack', asDealer.bank);
+      recordBank(asDealer);
+    } else if (mySeat !== null) {
+      saveBalance('blackjack', mySeat.bankroll + sum(mySeat.pendingBets));
+    }
     recordRound(view);
     renderLedger();
-    bankrollEl.textContent = formatChips(mySeat?.bankroll ?? startingBalance('blackjack'));
+    bankrollLabelEl.textContent = asDealer === null ? 'Bankroll' : 'Banque';
+    bankrollEl.textContent = formatChips(asDealer?.bank ?? mySeat?.bankroll ?? startingBalance('blackjack'));
+    const { dealer } = snapshot;
+    dealerNameEl.textContent =
+      dealer === null ? 'Croupier' : `Croupier · ${dealer.name}${asDealer !== null ? ' (vous)' : ''} · banque ${formatChips(dealer.bank)}`;
+    setHtml(dealerRoleEl, host === null ? '' : roleButton(view, dealer !== null));
+    seatsEl.classList.toggle('crowded', view.seats.filter((seat) => seat !== null).length > 4);
 
     setHtml(
       dealerCardsEl,
@@ -478,7 +598,9 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       return;
     }
     const seat = last === null ? null : seatOfViewer(last.view);
-    const bankroll = (seat === null ? startingBalance('blackjack') : seat.bankroll + sum(seat.pendingBets)) + DAILY_REFILL;
+    const bank = last === null ? null : dealerOf(last);
+    const current = bank !== null ? bank.bank : seat === null ? startingBalance('blackjack') : seat.bankroll + sum(seat.pendingBets);
+    const bankroll = current + DAILY_REFILL;
     saveBalance('blackjack', bankroll);
     client?.send({ type: 'REBUY', bankroll });
     localMessage = [REFILL_DONE_MESSAGE, 'win'];
@@ -500,6 +622,15 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         break;
       case 'DEAL':
         send({ type: 'READY' });
+        break;
+      case 'DEALER': {
+        const move = button.dataset['move'];
+        if (isDealerMove(move)) send({ type: 'DEALER', action: move });
+        break;
+      }
+      case 'DEALER_MODE':
+        selectedBox = 0;
+        send({ type: 'DEALER_MODE', enabled: button.dataset['enabled'] === 'true' });
         break;
       case 'NEXT_ROUND':
         send({ type: 'NEXT_ROUND' });
@@ -532,7 +663,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target instanceof HTMLInputElement) return;
     const selector =
       event.key === 'Enter'
-        ? '[data-action="DEAL"], [data-action="NEXT_ROUND"]'
+        ? '[data-action="DEAL"], [data-action="NEXT_ROUND"], [data-action="DEALER"]'
         : `[data-action="${KEY_ACTIONS[event.key.toUpperCase()] ?? '-'}"]`;
     const button = controlsEl.querySelector<HTMLButtonElement>(selector);
     if (button !== null && !button.disabled) {
@@ -583,12 +714,15 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       });
       const dealer = [dealerUp, dealerHole];
       const [only] = mine;
+      const dealerMode = host.dealerMode;
       let outcome = `Si tout le monde reste sur ses 2 cartes, le croupier ${dealerDraw(state, dealer, nextIndex + 2 * count + 2)}.`;
       if (scoreCards(dealer).isBlackjack) outcome = 'Le croupier aura Blackjack.';
       else if (mine.length === 1 && only !== undefined && scoreCards([only.first, only.second]).isBlackjack) outcome = 'Vous aurez Blackjack !';
       return [
         `Prochaines cartes du croupier : ${cardText(dealerUp)} (visible) · ${cardText(dealerHole)} (cachée)`,
-        `Mes prochaines cartes : ${mine.map((hand) => `${mine.length > 1 ? `main ${hand.box + 1} ` : ''}${cardText(hand.first)} ${cardText(hand.second)}`).join(' · ') || '—'}`,
+        ...(dealerMode
+          ? []
+          : [`Mes prochaines cartes : ${mine.map((hand) => `${mine.length > 1 ? `main ${hand.box + 1} ` : ''}${cardText(hand.first)} ${cardText(hand.second)}`).join(' · ') || '—'}`]),
         outcome,
       ].join('\n');
     }
@@ -607,9 +741,13 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     const table = host;
     setCheatTarget({
       games: ['blackjack'],
-      getBalance: () => hostSeat()?.bankroll ?? 0,
+      getBalance: () => (table.dealerMode ? table.bank : (hostSeat()?.bankroll ?? 0)),
       setBalance: (_game, amount) => {
         const value = Number(amount);
+        if (table.dealerMode) {
+          table.setBank(value);
+          return null;
+        }
         const seat = hostSeat();
         if (seat === null) {
           // Créateur ruiné, donc debout : le nouveau solde le rassoit.
@@ -640,6 +778,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     unsubscribe();
     share?.close();
     client?.close();
+    host?.dispose();
     setCheatTarget(null);
     root.removeEventListener('click', onClick);
     root.removeEventListener('change', onChange);
