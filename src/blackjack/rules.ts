@@ -18,6 +18,9 @@ export type SplitMatching = 'SAME_RANK' | 'SAME_VALUE';
 
 export type SurrenderRule = 'NONE' | 'LATE';
 
+/** AUTO : le moteur fait jouer le croupier. MANUAL : un croupier humain joue sa main, sous le contrôle des règles. */
+export type DealerPlay = 'AUTO' | 'MANUAL';
+
 export interface BlackjackRules {
   readonly deckCount: number;
   /** Part du sabot distribuée avant la carte de coupe (0 < p ≤ 1). */
@@ -31,6 +34,11 @@ export interface BlackjackRules {
   readonly dealerHitsSoft17: boolean;
   /** Le croupier vérifie le Blackjack avec un As ou une figure/10 visible (règle américaine). */
   readonly dealerPeeks: boolean;
+  /**
+   * MANUAL : une fois les joueurs servis, un croupier humain retourne la hole card puis tire ou s'arrête ;
+   * le moteur n'autorise que le geste imposé (tirer sous 17 face à une main à battre, s'arrêter sinon).
+   */
+  readonly dealerPlay: DealerPlay;
   readonly blackjackPayout: Ratio;
   /** Assurance proposée si le croupier montre un As. Mise = ⌊mise/2⌋, payée 2:1. */
   readonly insurance: boolean;
@@ -58,6 +66,7 @@ export const STANDARD_BLACKJACK_RULES: BlackjackRules = Object.freeze({
 
   dealerHitsSoft17: false,
   dealerPeeks: true,
+  dealerPlay: 'AUTO',
   blackjackPayout: Object.freeze({ numerator: 3, denominator: 2 }),
   insurance: true,
 
@@ -85,6 +94,7 @@ export function validateBlackjackRules(rules: BlackjackRules): Result<BlackjackR
   if (!isChips(rules.maxBet) || rules.maxBet < rules.minBet) problems.push('maxBet doit être un entier ≥ minBet');
   if (!isValidRatio(rules.blackjackPayout)) problems.push('blackjackPayout doit être un rapport d’entiers positifs');
   if (!isIntegerBetween(rules.maxHandsPerSeat, 1, 8)) problems.push('maxHandsPerSeat doit être compris entre 1 et 8');
+  if (rules.dealerPlay !== 'AUTO' && rules.dealerPlay !== 'MANUAL') problems.push('dealerPlay doit valoir AUTO ou MANUAL');
 
   return problems.length === 0
     ? ok(rules)
