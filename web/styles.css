@@ -191,6 +191,14 @@ button.bet-spot { font-family: inherit; background: transparent; cursor: pointer
 button.bet-spot:hover { transform: translateY(-2px); }
 .bet-spot.selected { box-shadow: 0 0 0 3px rgba(224, 184, 79, 0.85), 0 0 24px rgba(224, 184, 79, 0.35); }
 .bet-spot.add { color: var(--gold); border-color: rgba(224, 184, 79, 0.55); letter-spacing: 0.08em; }
+.dealer-role:empty { display: none; }
+.dealer-toggle { padding: 6px 14px; font-size: 13px; }
+.bot-badge { background: rgba(255, 255, 255, 0.08); color: var(--muted); font-size: 10px; padding: 1px 6px; }
+.bj-seats.crowded { gap: 10px; }
+.bj-seats.crowded .bj-seat.shared { padding: 8px; }
+.bj-seats.crowded .card { --w: calc(var(--card-w) * 0.7); }
+.bj-seats.crowded .bj-hand { padding: 8px; gap: 6px; }
+.bj-seats.crowded .bet-spot:not(.small) { width: 80px; height: 80px; }
 
 /* ─── Tables partagées ─────────────────────────────── */
 .share-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 14px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
