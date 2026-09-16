@@ -38,6 +38,7 @@ import { validateBlackjackRules, type BlackjackRules } from '../rules.js';
 import {
   BLACKJACK_COMMAND_PHASES,
   type BlackjackCommand,
+  type BlackjackDealerAction,
   type BlackjackPlayerAction,
   type BlackjackPlayerActionType,
 } from '../types/actions.js';
@@ -56,6 +57,7 @@ import type {
   BlackjackSeat,
   BlackjackState,
   BlackjackTableBase,
+  DealerTurnPhase,
   HandCursor,
   InsurancePhase,
   PlayerTurnsPhase,
@@ -93,6 +95,11 @@ function setSeat<S extends Table>(table: S, index: SeatIndex, seat: BlackjackSea
 function freePlaces(table: Table): number {
   const used = table.seats.reduce((sum, seat) => sum + (seat === null ? 0 : Math.max(1, seat.pendingBets.length)), 0);
   return table.rules.seatCount - used;
+}
+
+/** Le croupier ne tire que s'il reste une main à battre (restée ou doublée) : sinon ses cartes ne changent rien. */
+function needsDealer(table: Table): boolean {
+  return table.seats.some((seat) => seat?.hands.some((hand) => hand.status === 'STOOD' || hand.status === 'DOUBLED'));
 }
 
 function handId(roundNumber: number, seatIndex: SeatIndex, ordinal: number): HandId {
@@ -164,6 +171,10 @@ export class BlackjackController implements BlackjackEngine {
           return this.#deal(state);
         case 'NEXT_ROUND':
           return done(this.#nextRound(state));
+        case 'REVEAL_HOLE_CARD':
+        case 'DEALER_HIT':
+        case 'DEALER_STAND':
+          return this.#dealerAction(state, command.type);
         case 'SIT_DOWN':
           return this.#sitDown(state, command);
         default:
@@ -214,6 +225,8 @@ export class BlackjackController implements BlackjackEngine {
         if (canSurrender(seat, hand, rules)) actions.push('SURRENDER');
         return { ...NO_ACTIONS, actions };
       }
+      case 'DEALER_TURN':
+        return NO_ACTIONS;
       case 'ROUND_OVER':
         return { ...NO_ACTIONS, actions: ['LEAVE_SEAT'] };
     }
@@ -240,6 +253,7 @@ export class BlackjackController implements BlackjackEngine {
       activeHand: state.phase === 'PLAYER_TURNS' ? state.cursor : null,
       settlements: state.phase === 'ROUND_OVER' ? state.settlements : [],
       insuranceSettlements: state.phase === 'ROUND_OVER' ? state.insuranceSettlements : [],
+      dealerActions: this.dealerActions(state),
       legalActions: viewer === null ? NO_ACTIONS : this.legalActions(state, viewer),
     };
   }
@@ -248,6 +262,17 @@ export class BlackjackController implements BlackjackEngine {
   projectEvent(event: BlackjackEvent, _viewer: PlayerId | null): BlackjackViewEvent {
     if (event.type !== 'CARD_DEALT') return event;
     return { ...event, card: event.faceUp ? { faceUp: true, card: event.card } : { faceUp: false } };
+  }
+
+  /**
+   * Geste attendu du croupier humain (règle MANUAL) pendant DEALER_TURN : retourner la hole card, puis le seul geste
+   * que permettent les règles — tirer sous 17 s'il reste une main à battre, sinon s'arrêter et payer.
+   */
+  dealerActions(state: BlackjackState): readonly BlackjackDealerAction[] {
+    if (state.phase !== 'DEALER_TURN') return [];
+    if (!state.dealer.holeCardRevealed) return ['REVEAL_HOLE_CARD'];
+    const mustHit = needsDealer(state) && dealerShouldHit(scoreCards(state.dealer.cards), state.rules);
+    return [mustHit ? 'DEALER_HIT' : 'DEALER_STAND'];
   }
 
   // ─── Gestion des sièges et des mises ────────────────────────────────────────
@@ -523,7 +548,12 @@ export class BlackjackController implements BlackjackEngine {
 
   #nextTurn(table: Table, events: BlackjackEvent[]): BlackjackState {
     const cursor = firstPlayableHand(table.seats);
-    if (cursor === null) return this.#finishRound(table, events);
+    if (cursor === null) {
+      if (table.rules.dealerPlay === 'AUTO') return this.#finishRound(table, events);
+      events.push({ type: 'DEALER_TURN_STARTED' });
+      const dealerTurn: DealerTurnPhase = { ...table, phase: 'DEALER_TURN' };
+      return dealerTurn;
+    }
     events.push({ type: 'TURN_STARTED', cursor });
     const turn: PlayerTurnsPhase = { ...table, phase: 'PLAYER_TURNS', cursor };
     return turn;
@@ -531,21 +561,59 @@ export class BlackjackController implements BlackjackEngine {
 
   // ─── Croupier et règlement ─────────────────────────────────────────────────
 
+  /** Geste du croupier humain, validé contre le seul geste que les règles autorisent à cet instant. */
+  #dealerAction(state: BlackjackState, type: BlackjackDealerAction): Step {
+    invariant(state.phase === 'DEALER_TURN', 'Geste du croupier hors de son tour');
+    const [expected] = this.dealerActions(state);
+    if (expected !== type) {
+      const reason =
+        expected === 'REVEAL_HOLE_CARD'
+          ? 'Retournez d’abord la carte cachée.'
+          : type === 'REVEAL_HOLE_CARD'
+            ? 'La carte cachée est déjà retournée.'
+            : expected === 'DEALER_HIT'
+              ? 'Le croupier doit tirer : moins de 17 face à une main à battre.'
+              : 'Le croupier doit s’arrêter : 17 ou plus, ou plus aucune main à battre.';
+      return err(new EngineError('ILLEGAL_ACTION', reason));
+    }
+
+    const events: BlackjackEvent[] = [];
+    const table = tableOf(state);
+    switch (type) {
+      case 'REVEAL_HOLE_CARD': {
+        const turn: DealerTurnPhase = { ...this.#revealHoleCard(table, events), phase: 'DEALER_TURN' };
+        return done(turn, events);
+      }
+      case 'DEALER_HIT': {
+        const turn: DealerTurnPhase = { ...this.#dealToDealer(table, true, events), phase: 'DEALER_TURN' };
+        return done(turn, events);
+      }
+      case 'DEALER_STAND':
+        return done(this.#settle(table, events), events);
+    }
+  }
+
+  /** IA du croupier (règle AUTO, ou Blackjack découvert au peek) : retourne la hole card, tire selon les règles, puis règle. */
   #finishRound(table: Table, events: BlackjackEvent[]): RoundOverPhase {
+    let current = this.#revealHoleCard(table, events);
+    // Inutile de tirer si aucune main ne reste à comparer (toutes bust, abandonnées ou Blackjack).
+    while (needsDealer(current) && dealerShouldHit(scoreCards(current.dealer.cards), current.rules)) {
+      current = this.#dealToDealer(current, true, events);
+    }
+    return this.#settle(current, events);
+  }
+
+  #revealHoleCard(table: Table, events: BlackjackEvent[]): Table {
+    if (table.dealer.holeCardRevealed) return table;
     const holeCard = table.dealer.cards[1];
     invariant(holeCard !== undefined, 'Hole card absente');
-    let current: Table = { ...table, dealer: { ...table.dealer, holeCardRevealed: true } };
     events.push({ type: 'HOLE_CARD_REVEALED', card: holeCard });
+    return { ...table, dealer: { ...table.dealer, holeCardRevealed: true } };
+  }
 
-    // IA du croupier : inutile de tirer si aucune main ne reste à comparer (toutes bust, abandonnées ou Blackjack).
-    const needsDealer = current.seats.some((seat) =>
-      seat?.hands.some((hand) => hand.status === 'STOOD' || hand.status === 'DOUBLED'),
-    );
-    let dealerScore = scoreCards(current.dealer.cards);
-    while (needsDealer && dealerShouldHit(dealerScore, current.rules)) {
-      current = this.#dealToDealer(current, true, events);
-      dealerScore = scoreCards(current.dealer.cards);
-    }
+  /** Paie chaque main et chaque assurance contre la main finale du croupier. */
+  #settle(current: Table, events: BlackjackEvent[]): RoundOverPhase {
+    const dealerScore = scoreCards(current.dealer.cards);
     events.push({ type: 'DEALER_FINISHED', score: dealerScore });
 
     const bets = new BlackjackBetManager(current.rules);
