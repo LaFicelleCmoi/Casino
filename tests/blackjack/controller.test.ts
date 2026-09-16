@@ -177,6 +177,46 @@ describe('plusieurs mains', () => {
   });
 });
 
+describe('croupier humain', () => {
+  function manualBets(): BlackjackState {
+    return run(
+      unwrap(controller.createTable({ ...STANDARD_BLACKJACK_RULES, dealerPlay: 'MANUAL' })),
+      { type: 'SIT_DOWN', playerId: alice, seatIndex: 0, displayName: 'Alice', buyIn: chips(500) },
+      { type: 'PLACE_BET', playerId: alice, amount: chips(100) },
+    );
+  }
+
+  it('retourne sa carte puis tire tant que les règles l’exigent, avant de payer', () => {
+    // Alice : T + 9 = 19. Croupier : 5 + 6 = 11, tire 4 (15) puis 8 (23, bust).
+    const dealt = run(stackShoe(manualBets(), 'Tc 5d 9s 6c 4h 8d 2c 2d'), { type: 'DEAL' }, { type: 'STAND', playerId: alice });
+    expect(dealt.phase).toBe('DEALER_TURN');
+    expect(controller.dealerActions(dealt)).toEqual(['REVEAL_HOLE_CARD']);
+    expect(controller.project(dealt, alice).dealerCards[1]).toEqual({ faceUp: false });
+    expectError(controller.apply(dealt, { type: 'DEALER_STAND' }), 'ILLEGAL_ACTION');
+
+    const revealed = run(dealt, { type: 'REVEAL_HOLE_CARD' });
+    expect(controller.project(revealed, alice).dealerActions).toEqual(['DEALER_HIT']);
+    expectError(controller.apply(revealed, { type: 'DEALER_STAND' }), 'ILLEGAL_ACTION');
+
+    const drawn = run(revealed, { type: 'DEALER_HIT' }, { type: 'DEALER_HIT' });
+    expect(drawn.dealer.cards.map(cardCode)).toEqual(['5d', '6c', '4h', '8d']);
+    expect(controller.dealerActions(drawn)).toEqual(['DEALER_STAND']);
+    expectError(controller.apply(drawn, { type: 'DEALER_HIT' }), 'ILLEGAL_ACTION');
+
+    const over = run(drawn, { type: 'DEALER_STAND' });
+    expect(over).toMatchObject({ phase: 'ROUND_OVER', settlements: [{ outcome: 'WIN', returned: 200 }] });
+    expect(over.seats[0]?.bankroll).toBe(600);
+  });
+
+  it('s’arrête sans tirer quand plus aucune main n’est à battre', () => {
+    // Alice : T + 6 puis K = bust. Croupier : 5 + 6 = 11, mais rien à battre.
+    const busted = run(stackShoe(manualBets(), 'Tc 5d 6s 6c Kh 2c 2d'), { type: 'DEAL' }, { type: 'HIT', playerId: alice });
+    const revealed = run(busted, { type: 'REVEAL_HOLE_CARD' });
+    expect(controller.dealerActions(revealed)).toEqual(['DEALER_STAND']);
+    expect(run(revealed, { type: 'DEALER_STAND' })).toMatchObject({ phase: 'ROUND_OVER', settlements: [{ outcome: 'LOSS' }] });
+  });
+});
+
 describe('projection anti-triche', () => {
   it('masque la hole card et l’ordre du sabot', () => {
     const dealt = run(stackShoe(aliceBets(), '2c 3c 4c 5c 6c 7c 8c 9c'), { type: 'DEAL' });
