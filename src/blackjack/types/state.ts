@@ -12,6 +12,9 @@ import type { DealerHand, HandSettlement, InsuranceSettlement, PlayerHand } from
  *                                                                        ▼
  *                                   PLAYER_TURNS ──toutes mains finies──▶ (DEALER_TURN) ▶ (SETTLEMENT) ▶ ROUND_OVER
  *
+ *   Règle dealerPlay MANUAL : DEALER_TURN devient une vraie phase, où le croupier humain joue
+ *   REVEAL_HOLE_CARD puis DEALER_HIT… et DEALER_STAND, qui règle la manche.
+ *
  *   ROUND_OVER ──NEXT_ROUND──▶ BETTING   (remélange si la carte de coupe a été atteinte)
  */
 
@@ -72,6 +75,11 @@ export interface RoundOverPhase extends BlackjackTableBase {
   readonly insuranceSettlements: readonly InsuranceSettlement[];
 }
 
-export type BlackjackState = BettingPhase | InsurancePhase | PlayerTurnsPhase | RoundOverPhase;
+/** Règle MANUAL uniquement : les joueurs ont fini, le croupier humain retourne sa carte cachée puis tire ou s'arrête. */
+export interface DealerTurnPhase extends BlackjackTableBase {
+  readonly phase: 'DEALER_TURN';
+}
+
+export type BlackjackState = BettingPhase | InsurancePhase | PlayerTurnsPhase | DealerTurnPhase | RoundOverPhase;
 
 export type BlackjackPhase = BlackjackState['phase'];
