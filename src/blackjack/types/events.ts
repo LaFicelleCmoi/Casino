@@ -21,6 +21,7 @@ export type BlackjackEvent<C extends Card | VisibleCard = Card> =
   | { readonly type: 'INSURANCE_DECIDED'; readonly seatIndex: SeatIndex; readonly taken: boolean; readonly stake: Chips }
   | { readonly type: 'DEALER_PEEKED'; readonly hasBlackjack: boolean }
   | { readonly type: 'TURN_STARTED'; readonly cursor: HandCursor }
+  | { readonly type: 'DEALER_TURN_STARTED' }
   | { readonly type: 'HAND_SPLIT'; readonly seatIndex: SeatIndex; readonly handId: HandId; readonly newHandId: HandId }
   | { readonly type: 'HAND_DOUBLED'; readonly seatIndex: SeatIndex; readonly handId: HandId; readonly newBet: Chips }
   | { readonly type: 'HAND_STATUS_CHANGED'; readonly seatIndex: SeatIndex; readonly handId: HandId; readonly status: PlayerHandStatus }
