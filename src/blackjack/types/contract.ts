@@ -1,6 +1,6 @@
 import type { ChipRange, GameEngine, GameTypes, PlayerId, SeatIndex, VisibleCard } from '../../core/index.js';
 import type { BlackjackRules } from '../rules.js';
-import type { BlackjackCommand, BlackjackPlayerActionType } from './actions.js';
+import type { BlackjackCommand, BlackjackDealerAction, BlackjackPlayerActionType } from './actions.js';
 import type { BlackjackEvent, BlackjackViewEvent } from './events.js';
 import type { BlackjackScore, HandSettlement, InsuranceSettlement } from './hand.js';
 import type { BlackjackPhase, BlackjackSeat, BlackjackState, HandCursor } from './state.js';
@@ -33,6 +33,8 @@ export interface BlackjackTableView {
   readonly activeHand: HandCursor | null;
   readonly settlements: readonly HandSettlement[];
   readonly insuranceSettlements: readonly InsuranceSettlement[];
+  /** Geste attendu du croupier humain pendant DEALER_TURN (règle MANUAL) ; vide sinon. */
+  readonly dealerActions: readonly BlackjackDealerAction[];
   readonly legalActions: BlackjackLegalActions;
 }
 
