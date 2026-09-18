@@ -45,6 +45,8 @@ type Tone = 'info' | 'win' | 'loss' | 'error';
 type Client = TableClient<BlackjackSnapshot, BlackjackTableCommand>;
 
 const CHIP_VALUES = [10, 25, 100, 500] as const;
+/** Raccourcis du panneau « rendre des jetons » du créateur. */
+const GRANT_VALUES = [100, 500, 1000, 5000] as const;
 
 const TURN_ACTIONS = [
   { action: 'HIT', label: 'Tirer', key: 'H' },
@@ -115,6 +117,9 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   let joinError: string | null = null;
   let unsubscribe: () => void = () => {};
   let selectedBox = 0;
+  /** Joueur à qui le créateur est en train de rendre des jetons (panneau ouvert). */
+  let grantTarget: string | null = null;
+  let credited: number | null = null;
   let recordedRound: number | null = null;
   let recordedBankRound: number | null = null;
   let localMessage: [string, Tone] | null = null;
@@ -340,9 +345,15 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         const mine = seat === mySeat;
         const ready = view.phase === 'BETTING' && snapshot.ready.includes(seat.player.id) ? '<span class="badge ready-badge">Prêt</span>' : '';
         const bot = isBotPlayer(seat.player.id) ? '<span class="badge bot-badge">Bot</span>' : '';
+        // Seul le créateur peut rendre des jetons, et seulement aux vrais joueurs qui ont rejoint sa table.
+        const credit =
+          host !== null && !mine && !isBotPlayer(seat.player.id)
+            ? `<button type="button" class="seat-credit" data-action="GRANT_OPEN" data-player="${escapeHtml(seat.player.id)}" ` +
+              `aria-label="Rendre des jetons à ${escapeHtml(seat.player.displayName)}">+ Jetons</button>`
+            : '';
         const head = shared
           ? `<header class="bj-seat-head"><span class="bj-seat-name">${escapeHtml(seat.player.displayName)}${mine ? ' · vous' : ''}</span>${bot}` +
-            `<span class="bj-seat-bank">${formatChips(seat.bankroll)}</span>${ready}</header>`
+            `<span class="bj-seat-bank">${formatChips(seat.bankroll)}</span>${ready}${credit}</header>`
           : '';
         const body = view.phase === 'BETTING' ? renderBoxes(view, seat, mine) : renderHands(view, seat);
         return `<section class="bj-seat ${mine ? 'mine' : ''} ${shared ? 'shared' : ''}">${head}<div class="bj-hands">${body}</div></section>`;
@@ -351,6 +362,27 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     const waiting =
       snapshot.waiting.length === 0 ? '' : `<p class="bj-waiting">En attente de la prochaine manche : ${snapshot.waiting.map(escapeHtml).join(', ')}</p>`;
     return seats + waiting;
+  }
+
+  /**
+   * Panneau du créateur pour rendre des jetons à un joueur. Il remplace les commandes le temps de la saisie : ainsi il
+   * reste à portée de pouce sur téléphone, et son HTML ne dépend que du joueur visé, donc le montant tapé survit aux
+   * rafraîchissements de la table.
+   */
+  function grantPanelHtml(name: string): string {
+    const quick = GRANT_VALUES.map(
+      (value) => `<button type="button" class="btn ghost grant-quick" data-action="GRANT_ADD" data-value="${value}">+${formatChips(value)}</button>`,
+    ).join('');
+    return `
+      <div class="grant-panel">
+        <p class="grant-title">Rendre des jetons à <strong>${escapeHtml(name)}</strong> <span>· votre banque n'est pas débitée</span></p>
+        <div class="grant-row">${quick}</div>
+        <div class="grant-row">
+          <input class="grant-input" type="number" inputmode="numeric" min="1" step="10" placeholder="Montant" aria-label="Jetons à rendre" data-grant-amount>
+          <button class="btn primary" data-action="GRANT">Créditer</button>
+          <button class="btn ghost" data-action="GRANT_CLOSE">Annuler</button>
+        </div>
+      </div>`;
   }
 
   function renderControls(snapshot: BlackjackSnapshot, mySeat: BlackjackSeat | null, shared: boolean): string {
@@ -480,6 +512,12 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       return;
     }
     last = snapshot;
+    // Le total reçu ne peut que monter : sa hausse annonce au joueur les jetons que le créateur vient de lui rendre.
+    if (credited === null || snapshot.credited < credited) credited = snapshot.credited;
+    else if (snapshot.credited > credited) {
+      localMessage = [`Le croupier vous rend ${formatChips(snapshot.credited - credited)} jetons.`, 'win'];
+      credited = snapshot.credited;
+    }
     const { view } = snapshot;
     const mySeat = seatOfViewer(view);
     const shared = isShared(snapshot);
@@ -532,7 +570,16 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     messageEl.dataset['tone'] = tone;
     shoeEl.textContent = `Sabot : ${view.shoe.cardsRemaining} cartes${view.shoe.reshufflePending ? ' · remélange à la prochaine manche' : ''}`;
     setHtml(seatsEl, renderSeats(snapshot, mySeat, shared));
-    setHtml(controlsEl, closed ? '<a class="btn primary" href="#/blackjack">Jouer seul</a>' : renderControls(snapshot, mySeat, shared));
+    const grantName = grantTarget === null ? null : (view.seats.find((seat) => seat?.player.id === grantTarget)?.player.displayName ?? null);
+    if (grantName === null) grantTarget = null;
+    setHtml(
+      controlsEl,
+      closed
+        ? '<a class="btn primary" href="#/blackjack">Jouer seul</a>'
+        : grantName !== null
+          ? grantPanelHtml(grantName)
+          : renderControls(snapshot, mySeat, shared),
+    );
   }
 
   async function invite(): Promise<void> {
@@ -591,6 +638,24 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     );
   }
 
+  /** Envoie le montant saisi au joueur visé : le panneau se referme, ses jetons arrivent tout de suite. */
+  function grant(): void {
+    const target = grantTarget;
+    if (target === null) return;
+    const input = controlsEl.querySelector<HTMLInputElement>('[data-grant-amount]');
+    const amount = Math.trunc(Number(input?.value ?? ''));
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      localMessage = ['Indiquez le nombre de jetons à rendre.', 'error'];
+      render();
+      return;
+    }
+    const name = last?.view.seats.find((seat) => seat?.player.id === target)?.player.displayName ?? 'ce joueur';
+    grantTarget = null;
+    send({ type: 'GRANT', target, amount });
+    localMessage = [`Vous rendez ${formatChips(amount)} jetons à ${name}.`, 'win'];
+    render();
+  }
+
   function refill(): void {
     if (!claimDailyRefill('blackjack')) {
       localMessage = [REFILL_USED_MESSAGE, 'error'];
@@ -638,6 +703,27 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       case 'REBUY':
         refill();
         break;
+      case 'GRANT_OPEN':
+        grantTarget = button.dataset['player'] ?? null;
+        localMessage = null;
+        render();
+        break;
+      case 'GRANT_ADD': {
+        // Le montant vit dans le champ, jamais dans un rendu : le cumul des raccourcis ne peut pas être effacé.
+        const input = controlsEl.querySelector<HTMLInputElement>('[data-grant-amount]');
+        if (input !== null) {
+          input.value = String(Math.max(0, Math.trunc(Number(input.value)) || 0) + Number(button.dataset['value'] ?? 0));
+          input.focus();
+        }
+        break;
+      }
+      case 'GRANT':
+        grant();
+        break;
+      case 'GRANT_CLOSE':
+        grantTarget = null;
+        render();
+        break;
       case 'INVITE':
         void invite();
         break;
@@ -660,6 +746,11 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   }
 
   function onKey(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && event.target instanceof HTMLInputElement && event.target.matches('[data-grant-amount]')) {
+      event.preventDefault();
+      grant();
+      return;
+    }
     if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target instanceof HTMLInputElement) return;
     const selector =
       event.key === 'Enter'
