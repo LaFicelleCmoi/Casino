@@ -24,6 +24,8 @@ export const BLACKJACK_HOST: PlayerId = playerId('hote');
 
 const BOT_NAMES = ['Léa', 'Hugo', 'Nora', 'Malik', 'Inès', 'Sacha', 'Yanis', 'Zoé'] as const;
 const BOT_DELAY_MS = 700;
+/** Plafond d'un crédit offert par le créateur, comme pour les codes de triche. */
+const MAX_GRANT = 1_000_000_000_000;
 
 /** Les bots n'existent qu'à la table d'un croupier humain : ils prennent chaque place laissée libre par les vrais joueurs. */
 export const isBotPlayer = (id: string): boolean => id.startsWith('bot-');
@@ -49,7 +51,9 @@ export type BlackjackTableCommand =
   /** Créateur uniquement, entre deux manches : devenir croupier face aux bots et aux invités, ou redevenir joueur. */
   | { readonly type: 'DEALER_MODE'; readonly enabled: boolean }
   /** Créateur croupier uniquement : distribuer, retourner la carte cachée, tirer, s'arrêter. */
-  | { readonly type: 'DEALER'; readonly action: BlackjackDealerMove };
+  | { readonly type: 'DEALER'; readonly action: BlackjackDealerMove }
+  /** Créateur uniquement : rendre des jetons à un joueur qui a rejoint la table, sans toucher à sa banque. */
+  | { readonly type: 'GRANT'; readonly target: string; readonly amount: number };
 
 export interface BlackjackDealerInfo {
   readonly name: string;
@@ -71,11 +75,13 @@ export interface BlackjackSnapshot {
   readonly players: number;
   /** Présent quand le créateur tient le rôle de croupier. */
   readonly dealer: BlackjackDealerInfo | null;
+  /** Total des jetons rendus par le créateur à ce joueur : sa hausse prévient le joueur crédité. */
+  readonly credited: number;
 }
 
 function parseCommand(raw: unknown): BlackjackTableCommand | null {
   if (typeof raw !== 'object' || raw === null) return null;
-  const { type, amount, box, bankroll, name, enabled, action } = raw as Record<string, unknown>;
+  const { type, amount, box, bankroll, name, enabled, action, target } = raw as Record<string, unknown>;
   if (isSeatAction(type)) return { type };
   switch (type) {
     case 'PLACE_BET':
@@ -92,6 +98,8 @@ function parseCommand(raw: unknown): BlackjackTableCommand | null {
       return typeof enabled === 'boolean' ? { type: 'DEALER_MODE', enabled } : null;
     case 'DEALER':
       return isDealerMove(action) ? { type: 'DEALER', action } : null;
+    case 'GRANT':
+      return typeof target === 'string' && typeof amount === 'number' ? { type: 'GRANT', target, amount } : null;
     default:
       return null;
   }
@@ -118,6 +126,8 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
   readonly #queue = new Map<PlayerId, { readonly name: string; readonly bankroll: number }>();
   /** Joueurs partis : ils restent sur leurs mains jusqu'au règlement, puis quittent la table. */
   readonly #leaving = new Set<PlayerId>();
+  /** Jetons rendus par le créateur, cumulés par joueur. */
+  readonly #credits = new Map<PlayerId, number>();
   readonly #listeners = new Set<() => void>();
   #guests = 0;
   #dealerMode = false;
@@ -186,6 +196,7 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     this.#queue.delete(id);
     this.#ready.delete(id);
     this.#notices.delete(id);
+    this.#credits.delete(id);
     if (this.#seatOf(id) !== null) this.#leaving.add(id);
     this.#settle();
   }
@@ -209,6 +220,7 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       dealer: this.#dealerMode
         ? { name: this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null), bank: this.#bank, lastRound: this.#lastRound }
         : null,
+      credited: this.#credits.get(id) ?? 0,
     };
   }
 
@@ -248,6 +260,10 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
         if (!host || !this.#dealerMode) this.#notices.set(id, 'Seul le croupier joue ce coup.');
         else if (command.action === 'DEAL') this.#dealerDeal();
         else this.#apply(id, { type: command.action });
+        return;
+      case 'GRANT':
+        if (host) this.#grant(playerId(command.target), command.amount);
+        else this.#notices.set(id, 'Seul le créateur de la table rend des jetons.');
         return;
       default:
         this.#apply(id, { type: command.type, playerId: id });
@@ -341,6 +357,33 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       return;
     }
     if (this.#apply(id, { type: 'LEAVE_SEAT', playerId: id })) this.#sit(id, name, bankroll, seat.seatIndex);
+  }
+
+  /**
+   * Le créateur rend des jetons à un joueur qui a rejoint la table : crédités aussitôt, à son siège comme dans la file
+   * d'attente. Ce sont des jetons fictifs offerts par la maison, donc la banque du croupier n'est pas débitée.
+   */
+  #grant(target: PlayerId, amount: number): void {
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_GRANT) {
+      this.#notices.set(BLACKJACK_HOST, `Montant invalide : de 1 à ${formatChips(MAX_GRANT)} jetons.`);
+      return;
+    }
+    if (target === BLACKJACK_HOST || isBotPlayer(target)) {
+      this.#notices.set(BLACKJACK_HOST, 'Seuls les joueurs qui ont rejoint la table peuvent être crédités.');
+      return;
+    }
+    const queued = this.#queue.get(target);
+    const seat = this.#seatOf(target);
+    if (queued === undefined && seat === null) {
+      this.#notices.set(BLACKJACK_HOST, 'Ce joueur a quitté la table.');
+      return;
+    }
+    if (queued !== undefined) this.#queue.set(target, { ...queued, bankroll: Math.min(queued.bankroll + amount, MAX_GRANT) });
+    if (seat !== null) {
+      const credited: BlackjackSeat = { ...seat, bankroll: chips(Math.min(seat.bankroll + amount, MAX_GRANT)) };
+      this.#state = { ...this.#state, seats: this.#state.seats.map((current) => (current === seat ? credited : current)) };
+    }
+    this.#credits.set(target, (this.#credits.get(target) ?? 0) + amount);
   }
 
   #rename(id: PlayerId, name: string): void {
