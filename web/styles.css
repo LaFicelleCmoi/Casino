@@ -194,6 +194,15 @@ button.bet-spot:hover { transform: translateY(-2px); }
 .dealer-role:empty { display: none; }
 .dealer-toggle { padding: 6px 14px; font-size: 13px; }
 .bot-badge { background: rgba(255, 255, 255, 0.08); color: var(--muted); font-size: 10px; padding: 1px 6px; }
+.seat-credit { padding: 2px 9px; border-radius: 999px; border: 1px solid rgba(224, 184, 79, 0.45); background: transparent; color: var(--gold); font-size: 11px; font-weight: 700; cursor: pointer; }
+.seat-credit:hover { background: rgba(224, 184, 79, 0.16); }
+.grant-panel { flex: 1 1 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.grant-title { margin: 0; font-size: 15px; }
+.grant-title strong { color: var(--gold); }
+.grant-title span { color: var(--muted); font-size: 13px; }
+.grant-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
+.grant-quick { padding: 8px 14px; font-size: 13px; }
+.grant-input { width: 150px; padding: 11px 12px; border-radius: 12px; border: 1px solid rgba(224, 184, 79, 0.45); background: #0d1310; color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
 .bj-seats.crowded { gap: 10px; }
 .bj-seats.crowded .bj-seat.shared { padding: 8px; }
 .bj-seats.crowded .card { --w: calc(var(--card-w) * 0.7); }
@@ -785,6 +794,15 @@ a.btn { text-decoration: none; }
 .card.xray { opacity: 0.8; outline: 2px dashed #7fd6ff; outline-offset: 2px; }
 
 /* ─── Responsive ───────────────────────────────────── */
+/* Écran tactile : le survol ne doit pas rester collé au bouton que le doigt vient de toucher. */
+@media (hover: none) {
+  .btn:hover:not(:disabled) { background: #1d2721; transform: none; }
+  .btn.primary:hover:not(:disabled) { background: linear-gradient(180deg, var(--gold), var(--gold-deep)); }
+  .btn.ghost:hover:not(:disabled) { background: transparent; }
+  .chip:hover:not(:disabled), button.bet-spot:hover { transform: none; }
+  .seat-credit:hover { background: transparent; }
+}
+
 @media (max-width: 900px) {
   :root { --card-w: 60px; }
   .holdem-layout { grid-template-columns: 1fr; }
@@ -822,4 +840,16 @@ a.btn { text-decoration: none; }
   .share-count { margin-left: 0; }
   .chip { width: 46px; height: 46px; }
   .btn { padding: 10px 14px; }
+  /* Croupier au téléphone : ses gestes restent sous le pouce, sans défiler sous les 8 places. */
+  .controls { position: sticky; bottom: 0; z-index: 5; padding-right: 58px; box-shadow: 0 -12px 24px -14px #000; }
+  .controls .btn { flex: 1 1 auto; justify-content: center; text-align: center; }
+  .btn kbd { display: none; }
+  .zone-label { flex-wrap: wrap; justify-content: center; text-align: center; letter-spacing: 0.1em; }
+  .rules-strip { font-size: 11px; }
+  .bj-seat-head { gap: 6px; font-size: 11px; }
+  .bj-seats.crowded { gap: 8px; }
+  .bj-seats.crowded .bj-seat.shared { padding: 6px 8px; }
+  .bj-seats.crowded .bet-spot.small { width: 52px; height: 52px; }
+  .grant-input { flex: 1 1 100%; width: auto; }
+  .grant-row .btn { flex: 1 1 auto; }
 }
