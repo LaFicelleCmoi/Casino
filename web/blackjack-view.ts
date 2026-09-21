@@ -5,12 +5,27 @@ import {
   scoreCards,
   scoreHand,
   type BlackjackDealerAction,
+  type BlackjackRules,
   type BlackjackSeat,
   type BlackjackState,
   type BlackjackTableView,
   type HandOutcome,
   type PlayerHand,
 } from '../src/blackjack/index.js';
+import {
+  HOUSE_CHOICES,
+  arrivalChance,
+  betAppetite,
+  departureChance,
+  guestTip,
+  houseEdge,
+  houseMood,
+  sideBetSteps,
+  tipChance,
+  type HouseMood,
+  type HouseRules,
+  type ServiceNote,
+} from './blackjack-house.js';
 import {
   BLACKJACK_HOST,
   BLACKJACK_TABLE_RULES,
@@ -66,6 +81,67 @@ const OUTCOME_LABELS: Record<HandOutcome, string> = {
 
 const KEY_ACTIONS: Readonly<Record<string, string>> = { H: 'HIT', S: 'STAND', D: 'DOUBLE_DOWN', P: 'SPLIT', A: 'SURRENDER' };
 
+/** Libellés des règles de la maison, dans l'ordre du panneau du croupier. */
+const HOUSE_ROWS: readonly { readonly key: keyof HouseRules; readonly label: string; readonly option: (value: never) => string }[] = [
+  { key: 'payout', label: 'Blackjack payé', option: (value: string) => value },
+  { key: 'soft17', label: 'Soft 17 du croupier', option: (value: string) => (value === 'HIT' ? 'Tire' : 'Reste') },
+  { key: 'decks', label: 'Sabot', option: (value: number) => `${value} jeu${value > 1 ? 'x' : ''}` },
+  {
+    key: 'double',
+    label: 'Doubler sur',
+    option: (value: string) => ({ ANY_TWO: 'Toutes mains', NINE_TO_ELEVEN: '9 à 11', TEN_OR_ELEVEN: '10 et 11' })[value] ?? value,
+  },
+  { key: 'doubleAfterSplit', label: 'Double après split', option: (value: boolean) => (value ? 'Oui' : 'Non') },
+  { key: 'surrender', label: 'Abandon', option: (value: string) => (value === 'LATE' ? 'Oui' : 'Non') },
+  { key: 'minBet', label: 'Mise minimum', option: (value: number) => formatChips(value) },
+  { key: 'maxBet', label: 'Mise maximum', option: (value: number) => formatChips(value) },
+  { key: 'perfectPairs', label: 'Paires parfaites', option: (value: boolean) => (value ? 'Oui' : 'Non') },
+  { key: 'serviceLength', label: 'Service', option: (value: number) => `${value} manches` },
+];
+
+const MOOD_LABELS: Record<HouseMood, string> = { GENEROUS: 'Généreuse', BALANCED: 'Équilibrée', TIGHT: 'Serrée', STINGY: 'Radine' };
+
+const PAIR_LABELS = { PERFECT: 'Paire parfaite', COLORED: 'Paire de couleur', MIXED: 'Paire' } as const;
+
+const RECORD_KEY = 'casino-engine:croupier-record:v1';
+
+const percent = (value: number): string => `${Math.round(value * 100)} %`;
+const edgeText = (edge: number): string => `${edge < 0 ? '−' : ''}${Math.abs(edge).toFixed(2).replace('.', ',')} %`;
+
+/** Bandeau des règles, lu par tous les joueurs : il suit les règles de la maison du croupier. */
+function rulesStrip(rules: BlackjackRules, house: HouseRules): string {
+  const { numerator, denominator } = rules.blackjackPayout;
+  return [
+    rules.dealerHitsSoft17 ? 'Le croupier tire sur soft 17' : 'Le croupier reste sur soft 17',
+    `Blackjack payé ${numerator}:${denominator}`,
+    'Assurance payée 2:1',
+    `Sabot de ${rules.deckCount} jeu${rules.deckCount > 1 ? 'x' : ''}`,
+    `Mises ${formatChips(rules.minBet)} à ${formatChips(rules.maxBet)}`,
+    ...(rules.surrender === 'LATE' ? ['Abandon autorisé'] : []),
+    ...(house.perfectPairs ? ['Paires parfaites 25:1 · 12:1 · 6:1'] : []),
+    '8 places : une main de plus par place libre',
+  ].join(' · ');
+}
+
+function loadRecord(): { readonly score: number; readonly grade: string } | null {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(RECORD_KEY) ?? 'null');
+    if (typeof raw !== 'object' || raw === null) return null;
+    const { score, grade } = raw as Record<string, unknown>;
+    return typeof score === 'number' && typeof grade === 'string' ? { score, grade } : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRecord(note: ServiceNote): void {
+  try {
+    localStorage.setItem(RECORD_KEY, JSON.stringify({ score: note.score, grade: note.grade }));
+  } catch {
+    // Stockage indisponible : le record ne sera simplement pas retenu.
+  }
+}
+
 const DEALER_LABELS: Record<BlackjackDealerAction, string> = {
   REVEAL_HOLE_CARD: 'Retourner la carte cachée',
   DEALER_HIT: 'Tirer une carte',
@@ -104,6 +180,25 @@ function chipsAtRisk(view: BlackjackTableView): number {
   return sum(seat.hands.map((hand) => hand.bet)) + insurance;
 }
 
+/** Net d'une manche pour un siège, Paires parfaites comprises. */
+function seatNet(snapshot: BlackjackSnapshot, seatIndex: number): number | null {
+  const main = roundNet(snapshot.view, seatIndex);
+  const side = snapshot.sideResults.filter((result) => result.seatIndex === seatIndex);
+  if (main === null && side.length === 0) return null;
+  return (main ?? 0) + sum(side.map((result) => result.net));
+}
+
+const listNames = (names: readonly string[]): string =>
+  names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} et ${names.at(-1) ?? ''}`;
+
+/** « Hugo quitte la table · Zoé et Adam s'installent. » */
+function movementText(movement: { readonly left: readonly string[]; readonly arrived: readonly string[] }): string {
+  const parts: string[] = [];
+  if (movement.left.length > 0) parts.push(`${listNames(movement.left)} ${movement.left.length > 1 ? 'quittent' : 'quitte'} la table`);
+  if (movement.arrived.length > 0) parts.push(`${listNames(movement.arrived)} ${movement.arrived.length > 1 ? "s'installent" : "s'installe"}`);
+  return `${parts.join(' · ')}.`;
+}
+
 /** Joue sur la table locale (tableId null) ou rejoint la table partagée désignée par le lien. */
 export function mountBlackjack(root: HTMLElement, tableId: string | null = null): () => void {
   const rng = new CryptoRandomSource();
@@ -120,6 +215,12 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   /** Joueur à qui le créateur est en train de rendre des jetons (panneau ouvert). */
   let grantTarget: string | null = null;
   let credited: number | null = null;
+  let tipped: number | null = null;
+  let guestTipSerial: number | null = null;
+  let houseOpen = false;
+  /** Dernière note de service vue, et le record battu (ou non) qu'elle a donné. */
+  let gradedNote: ServiceNote | null = null;
+  let previousRecord: ReturnType<typeof loadRecord> = null;
   let recordedRound: number | null = null;
   let recordedBankRound: number | null = null;
   let localMessage: [string, Tone] | null = null;
@@ -135,15 +236,17 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         <div class="topbar-stats">
           <div class="bankroll">Bilan <strong data-ledger></strong></div>
           <div class="bankroll"><span data-bankroll-label>Bankroll</span> <strong data-bankroll></strong></div>
+          <div class="bankroll" data-tips-box hidden>Pourboires <strong data-tips></strong></div>
         </div>
       </header>
       <div class="share-bar" data-share></div>
       <section class="felt bj-felt">
-        <p class="rules-strip">Le croupier reste sur soft 17 · Blackjack payé 3:2 · Assurance payée 2:1 · 8 places : une main de plus par place libre</p>
+        <p class="rules-strip" data-rules></p>
         <div class="bj-dealer">
           <div class="zone-label"><span data-dealer-name>Croupier</span> <span class="score-pill" data-dealer-score></span></div>
           <div class="card-row" data-dealer-cards></div>
           <div class="dealer-role" data-dealer-role></div>
+          <div class="dealer-desk" data-desk></div>
         </div>
         <p class="message" data-message aria-live="polite"></p>
         <div class="bj-seats" data-seats></div>
@@ -164,6 +267,10 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   const seatsEl = queryIn<HTMLElement>(root, '[data-seats]');
   const shoeEl = queryIn<HTMLElement>(root, '[data-shoe]');
   const controlsEl = queryIn<HTMLElement>(root, '[data-controls]');
+  const rulesEl = queryIn<HTMLElement>(root, '[data-rules]');
+  const deskEl = queryIn<HTMLElement>(root, '[data-desk]');
+  const tipsBoxEl = queryIn<HTMLElement>(root, '[data-tips-box]');
+  const tipsEl = queryIn<HTMLElement>(root, '[data-tips]');
 
   const isShared = (snapshot: BlackjackSnapshot): boolean =>
     host === null || share !== null || snapshot.players > 1 || snapshot.dealer !== null;
@@ -200,14 +307,15 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   }
 
   /** Enregistre au bilan la manche que le joueur vient de terminer, une seule fois. */
-  function recordRound(view: BlackjackTableView): void {
+  function recordRound(snapshot: BlackjackSnapshot): void {
+    const { view } = snapshot;
     if (recordedRound === null) {
       recordedRound = view.phase === 'ROUND_OVER' ? view.roundNumber : -1;
       return;
     }
     if (view.phase !== 'ROUND_OVER' || view.roundNumber === recordedRound || view.viewerSeat === null) return;
     recordedRound = view.roundNumber;
-    const net = roundNet(view, view.viewerSeat);
+    const net = seatNet(snapshot, view.viewerSeat);
     if (net !== null) recordResult('blackjack', net);
   }
 
@@ -220,7 +328,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     }
     if (round === null || round.roundNumber === recordedBankRound) return;
     recordedBankRound = round.roundNumber;
-    recordResult('blackjack', round.net);
+    // Les pourboires sont un gain du croupier : ils rejoignent son solde à la fin du service.
+    recordResult('blackjack', round.net + round.tips);
   }
 
   function describeDealer(snapshot: BlackjackSnapshot, dealer: BlackjackDealerInfo): [string, Tone] {
@@ -228,9 +337,12 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     const seats = view.seats.filter((seat): seat is BlackjackSeat => seat !== null);
     switch (view.phase) {
       case 'BETTING': {
+        if (dealer.service.note !== null) return [`Service terminé : note ${dealer.service.note.grade}. Lancez un nouveau service.`, 'info'];
         if (dealer.bank <= 0) return ['La banque est vide : rechargez-la pour distribuer.', 'error'];
         const bettors = seats.filter((seat) => seat.pendingBets.length > 0).length;
-        return [`Vous êtes le croupier : ${bettors} joueur${bettors > 1 ? 's' : ''} sur ${seats.length} ${bettors > 1 ? 'ont' : 'a'} misé. Distribuez quand vous voulez.`, 'info'];
+        const moves = dealer.movement === null ? '' : `${movementText(dealer.movement)} `;
+        if (seats.length === 0) return [`${moves}Table vide : personne ne s'assoit pour l'instant.`, 'info'];
+        return [`${moves}${bettors} joueur${bettors > 1 ? 's' : ''} sur ${seats.length} ${bettors > 1 ? 'ont' : 'a'} misé. Distribuez quand vous voulez.`, 'info'];
       }
       case 'INSURANCE':
         return ['Vous montrez un As : les joueurs décident de l’assurance…', 'info'];
@@ -245,11 +357,14 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         return [total < 17 ? 'Plus aucune main à battre : réglez les mises.' : `Vous restez à ${total} : réglez les mises.`, 'info'];
       }
       case 'ROUND_OVER': {
-        const net = dealer.lastRound?.roundNumber === view.roundNumber ? dealer.lastRound.net : 0;
+        const round = dealer.lastRound?.roundNumber === view.roundNumber ? dealer.lastRound : null;
+        const net = round?.net ?? 0;
         const prefix = view.dealerScore?.isBlackjack ? 'Blackjack du croupier ! ' : '';
-        if (net > 0) return [`${prefix}La banque encaisse ${formatChips(net)} jetons.`, 'win'];
-        if (net < 0) return [`${prefix}La banque paie ${formatChips(-net)} jetons.`, 'loss'];
-        return [`${prefix}Manche blanche pour la banque.`, 'info'];
+        const tips = round !== null && round.tips > 0 ? ` · ${formatChips(round.tips)} de pourboires` : '';
+        const end = dealer.service.note === null ? '' : ` Service terminé : note ${dealer.service.note.grade} !`;
+        if (net > 0) return [`${prefix}La banque encaisse ${formatChips(net)} jetons${tips}.${end}`, 'win'];
+        if (net < 0) return [`${prefix}La banque paie ${formatChips(-net)} jetons${tips}.${end}`, 'loss'];
+        return [`${prefix}Manche blanche pour la banque${tips}.${end}`, 'info'];
       }
     }
   }
@@ -264,7 +379,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     }
     switch (view.phase) {
       case 'ROUND_OVER': {
-        const net = roundNet(view, mySeat.seatIndex);
+        const net = seatNet(snapshot, mySeat.seatIndex);
         const prefix = view.dealerScore?.isBlackjack ? 'Blackjack du croupier. ' : '';
         if (net === null) return [`${prefix}Manche terminée.`, 'info'];
         if (net > 0) return [`${prefix}Vous gagnez ${formatChips(net)} jetons.`, 'win'];
@@ -336,6 +451,20 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       .join('');
   }
 
+  /** Paires parfaites (mise ou résultat) et pourboire de la manche, sous le nom du joueur. */
+  function seatExtras(snapshot: BlackjackSnapshot, seatIndex: number): string {
+    const badges: string[] = [];
+    const pending = snapshot.view.phase === 'BETTING' ? snapshot.sideBets.find((bet) => bet.seatIndex === seatIndex) : undefined;
+    if (pending !== undefined) badges.push(`<span class="badge side-badge">Paires ${formatChips(pending.amount)}</span>`);
+    for (const result of snapshot.sideResults.filter((side) => side.seatIndex === seatIndex)) {
+      const label = result.pair === null ? 'Paires' : PAIR_LABELS[result.pair];
+      badges.push(`<span class="badge ${result.net > 0 ? 'side-win' : 'side-loss'}">${label} ${formatSigned(result.net)}</span>`);
+    }
+    const tip = sum((snapshot.dealer?.roundTips ?? []).filter((entry) => entry.seatIndex === seatIndex).map((entry) => entry.amount));
+    if (tip > 0) badges.push(`<span class="badge tip-badge">Pourboire +${formatChips(tip)}</span>`);
+    return badges.length === 0 ? '' : `<div class="seat-extras">${badges.join('')}</div>`;
+  }
+
   function renderSeats(snapshot: BlackjackSnapshot, mySeat: BlackjackSeat | null, shared: boolean): string {
     const { view } = snapshot;
     const others = view.seats.filter((seat): seat is BlackjackSeat => seat !== null && seat !== mySeat);
@@ -356,7 +485,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
             `<span class="bj-seat-bank">${formatChips(seat.bankroll)}</span>${ready}${credit}</header>`
           : '';
         const body = view.phase === 'BETTING' ? renderBoxes(view, seat, mine) : renderHands(view, seat);
-        return `<section class="bj-seat ${mine ? 'mine' : ''} ${shared ? 'shared' : ''}">${head}<div class="bj-hands">${body}</div></section>`;
+        const extras = seatExtras(snapshot, seat.seatIndex);
+        return `<section class="bj-seat ${mine ? 'mine' : ''} ${shared ? 'shared' : ''}">${head}${extras}<div class="bj-hands">${body}</div></section>`;
       })
       .join('');
     const waiting =
@@ -394,6 +524,9 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     const asDealer = dealerOf(snapshot);
     if (asDealer !== null) {
       const seats = view.seats.filter((seat): seat is BlackjackSeat => seat !== null);
+      if (asDealer.service.note !== null && (view.phase === 'BETTING' || view.phase === 'ROUND_OVER')) {
+        return button('NEW_SERVICE', 'Nouveau service', true, 'primary', '↵');
+      }
       switch (view.phase) {
         case 'BETTING': {
           if (asDealer.bank <= 0) return refillButtonHtml('blackjack');
@@ -440,7 +573,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         } else if (!shared || able.length <= 1) deal = button('DEAL', 'Distribuer', pending > 0, 'primary', '↵');
         else if (snapshot.ready.includes(snapshot.me)) deal = button('DEAL', `Prêt ✓ ${readyCount}/${able.length}`, false, 'primary');
         else deal = button('DEAL', `${pending > 0 ? 'Prêt' : 'Passer la manche'} · ${readyCount}/${able.length}`, true, 'primary', '↵');
-        return `<div class="chip-rack">${rack}</div>${button('CLEAR_BET', 'Effacer', legal.has('CLEAR_BET'), 'ghost')}${deal}`;
+        const extras = snapshot.dealer === null ? '' : sideBetButton(snapshot, mySeat) + tipButton(snapshot);
+        return `<div class="chip-rack">${rack}</div>${button('CLEAR_BET', 'Effacer', legal.has('CLEAR_BET'), 'ghost')}${extras}${deal}`;
       }
       case 'INSURANCE': {
         if (mySeat.insurance.status !== 'PENDING') return '<p class="waiting">Les autres joueurs décident…</p>';
@@ -463,9 +597,97 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         return `<p class="waiting">${escapeHtml(snapshot.dealer?.name ?? 'Le croupier')} joue sa main…</p>`;
       case 'ROUND_OVER':
         return snapshot.dealer !== null
-          ? '<p class="waiting">Le croupier lance la manche suivante.</p>'
+          ? `<p class="waiting">Le croupier lance la manche suivante.</p>${tipButton(snapshot)}`
           : button('NEXT_ROUND', 'Nouvelle manche', true, 'primary', '↵');
     }
+  }
+
+  /** Paires parfaites du joueur : chaque clic passe au palier suivant (non → minimum → double → ×5 → non). */
+  function sideBetButton(snapshot: BlackjackSnapshot, mySeat: BlackjackSeat): string {
+    if (!snapshot.house.perfectPairs) return '';
+    const steps = sideBetSteps(snapshot.house);
+    const current = snapshot.sideBets.find((bet) => bet.seatIndex === mySeat.seatIndex)?.amount ?? 0;
+    const next = steps[(steps.indexOf(current) + 1) % steps.length] ?? 0;
+    return (
+      `<button class="btn ghost side-toggle" data-action="SIDE_BET" data-amount="${next}" title="Paire parfaite 25:1 · de couleur 12:1 · simple 6:1">` +
+      `Paires parfaites : ${current === 0 ? 'non' : formatChips(current)}</button>`
+    );
+  }
+
+  function tipButton(snapshot: BlackjackSnapshot): string {
+    return snapshot.dealer === null || snapshot.me === BLACKJACK_HOST || seatOfViewer(snapshot.view) === null
+      ? ''
+      : `<button class="btn ghost" data-action="TIP">Pourboire au croupier (${formatChips(guestTip(snapshot.house))})</button>`;
+  }
+
+  /** Panneau du croupier : barre du service en cours et règles de la maison, ou note de fin de service. */
+  function renderDesk(snapshot: BlackjackSnapshot): string {
+    const dealer = dealerOf(snapshot);
+    if (dealer === null) return '';
+    const { view } = snapshot;
+    const { service } = dealer;
+    if (service.note !== null) return summaryHtml(dealer, service.note);
+    const seated = view.seats.filter((seat) => seat !== null).length;
+    const bar =
+      `<p class="service-bar"><span>Service <strong>${service.stats.rounds}/${service.length}</strong> manches</span>` +
+      `<span>Table <strong>${seated}/${view.rules.seatCount}</strong></span>` +
+      `<span>Pourboires <strong>${formatChips(dealer.tips)}</strong></span>` +
+      `<span>Gain théorique <strong>${formatSigned(Math.round(service.stats.theo))}</strong></span></p>`;
+    return bar + housePanelHtml(snapshot.house, view.phase === 'BETTING' || view.phase === 'ROUND_OVER');
+  }
+
+  function housePanelHtml(house: HouseRules, editable: boolean): string {
+    const edge = houseEdge(house);
+    const mood = houseMood(house);
+    const rows = HOUSE_ROWS.map(({ key, label, option }) => {
+      const buttons = (HOUSE_CHOICES[key] as readonly (string | number | boolean)[])
+        .map((choice) => {
+          const invalid = key === 'maxBet' && (choice as number) < house.minBet * 10;
+          return (
+            `<button type="button" class="seg-btn" data-action="HOUSE" data-key="${key}" data-value="${String(choice)}" ` +
+            `aria-pressed="${house[key] === choice}" ${editable && !invalid ? '' : 'disabled'}>${escapeHtml((option as (value: unknown) => string)(choice))}</button>`
+          );
+        })
+        .join('');
+      return `<div class="house-row"><span class="house-label">${label}</span><div class="seg">${buttons}</div></div>`;
+    }).join('');
+    const appetite = betAppetite(house);
+    const bets = appetite < 0.85 ? 'plus petites' : appetite > 1.15 ? 'plus grosses' : 'habituelles';
+    const effects =
+      `Chaque manche, une place libre trouve preneur dans ${percent(arrivalChance(house))} des cas, un joueur s'en va dans ` +
+      `${percent(departureChance(house, false))}, et un gagnant laisse un pourboire dans ${percent(tipChance(house))}. Mises ${bets}.` +
+      (edge < 0 ? ' Attention : avec ces règles, ce sont les joueurs qui ont l’avantage.' : '') +
+      (house.perfectPairs ? ' Paires parfaites : 4,1 % d’avantage sur chaque mise annexe.' : '');
+    return (
+      `<details class="house-panel" data-house ${houseOpen ? 'open' : ''}>` +
+      `<summary>Règles de la maison · avantage <strong>${edgeText(edge)}</strong> · <span class="mood mood-${mood.toLowerCase()}">${MOOD_LABELS[mood]}</span></summary>` +
+      `<p class="house-effects">${effects}</p><div class="house-grid">${rows}</div>` +
+      `${editable ? '' : '<p class="house-lock">Modifiable entre deux manches.</p>'}</details>`
+    );
+  }
+
+  function summaryHtml(dealer: BlackjackDealerInfo, note: ServiceNote): string {
+    const { stats } = dealer.service;
+    const record = previousRecord;
+    const recordLine =
+      record === null
+        ? 'Premier service noté : c’est votre record.'
+        : note.score > record.score
+          ? `Nouveau record ! L’ancien : ${record.grade} (${record.score}/100).`
+          : `Record à battre : ${record.grade} (${record.score}/100).`;
+    const parts = note.parts
+      .map((part) => `<li><span>${part.label}</span><span class="part-detail">${escapeHtml(part.detail)}</span><strong>${part.points}</strong></li>`)
+      .join('');
+    return `
+      <section class="service-summary">
+        <div class="grade grade-${note.grade.toLowerCase()}" aria-label="Note ${note.grade}">${note.grade}</div>
+        <div class="summary-body">
+          <h3>Service terminé · ${note.score}/100</h3>
+          <p>Banque ${formatSigned(stats.bankNet)} · ${formatChips(stats.tips)} jetons de pourboires versés à votre banque</p>
+          <ul class="summary-parts">${parts}</ul>
+          <p class="summary-record">${recordLine}</p>
+        </div>
+      </section>`;
   }
 
   /** Bouton de changement de rôle du créateur, actif entre deux manches. */
@@ -530,14 +752,37 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
 
     const asDealer = dealerOf(snapshot);
     if (asDealer !== null) {
-      saveBalance('blackjack', asDealer.bank);
+      // Solde du croupier : sa banque plus la cagnotte du service, qui lui revient à la fin.
+      saveBalance('blackjack', asDealer.bank + asDealer.tips);
       recordBank(asDealer);
+      const tip = asDealer.lastGuestTip;
+      if (guestTipSerial === null) guestTipSerial = tip?.serial ?? 0;
+      else if (tip !== null && tip.serial > guestTipSerial) {
+        guestTipSerial = tip.serial;
+        localMessage = [`${tip.name} vous laisse ${formatChips(tip.amount)} jetons de pourboire.`, 'win'];
+      }
+      const note = asDealer.service.note;
+      if (note !== null && note !== gradedNote) {
+        gradedNote = note;
+        previousRecord = loadRecord();
+        if (previousRecord === null || note.score > previousRecord.score) saveRecord(note);
+      }
     } else if (mySeat !== null) {
       saveBalance('blackjack', mySeat.bankroll + sum(mySeat.pendingBets));
     }
-    recordRound(view);
+    // Pourboires laissés au croupier : une dépense du joueur, comptée à son bilan.
+    if (tipped === null || snapshot.tipped < tipped) tipped = snapshot.tipped;
+    else if (snapshot.tipped > tipped) {
+      recordResult('blackjack', -(snapshot.tipped - tipped), false);
+      tipped = snapshot.tipped;
+    }
+    recordRound(snapshot);
     renderLedger();
     bankrollLabelEl.textContent = asDealer === null ? 'Bankroll' : 'Banque';
+    tipsBoxEl.hidden = asDealer === null;
+    tipsEl.textContent = formatChips(asDealer?.tips ?? 0);
+    rulesEl.textContent = rulesStrip(view.rules, snapshot.house);
+    setHtml(deskEl, renderDesk(snapshot));
     bankrollEl.textContent = formatChips(asDealer?.bank ?? mySeat?.bankroll ?? startingBalance('blackjack'));
     const { dealer } = snapshot;
     dealerNameEl.textContent =
@@ -703,6 +948,18 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       case 'REBUY':
         refill();
         break;
+      case 'HOUSE':
+        changeHouse(button.dataset['key'], button.dataset['value']);
+        break;
+      case 'NEW_SERVICE':
+        send({ type: 'NEW_SERVICE' });
+        break;
+      case 'SIDE_BET':
+        send({ type: 'SIDE_BET', amount: Number(button.dataset['amount'] ?? 0) });
+        break;
+      case 'TIP':
+        send({ type: 'TIP' });
+        break;
       case 'GRANT_OPEN':
         grantTarget = button.dataset['player'] ?? null;
         localMessage = null;
@@ -738,6 +995,22 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     }
   }
 
+  /** Une règle de la maison change ; un minimum relevé entraîne au besoin le maximum (10 fois le minimum au moins). */
+  function changeHouse(key: string | undefined, value: string | undefined): void {
+    const house = last?.house;
+    if (house === undefined || key === undefined || !(key in HOUSE_CHOICES)) return;
+    const choices = HOUSE_CHOICES[key as keyof HouseRules] as readonly unknown[];
+    const choice = choices.find((candidate) => String(candidate) === value);
+    if (choice === undefined) return;
+    let next = { ...house, [key]: choice } as HouseRules;
+    if (next.maxBet < next.minBet * 10) next = { ...next, maxBet: HOUSE_CHOICES.maxBet.find((max) => max >= next.minBet * 10) ?? 5000 };
+    send({ type: 'HOUSE_RULES', rules: next });
+  }
+
+  function onToggle(event: Event): void {
+    if (event.target instanceof HTMLDetailsElement && event.target.matches('[data-house]')) houseOpen = event.target.open;
+  }
+
   function onChange(event: Event): void {
     if (!(event.target instanceof HTMLInputElement) || !event.target.matches('[data-player-name]')) return;
     const name = savePlayerName(event.target.value);
@@ -754,7 +1027,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target instanceof HTMLInputElement) return;
     const selector =
       event.key === 'Enter'
-        ? '[data-action="DEAL"], [data-action="NEXT_ROUND"], [data-action="DEALER"]'
+        ? '[data-action="DEAL"], [data-action="NEXT_ROUND"], [data-action="DEALER"], [data-action="NEW_SERVICE"]'
         : `[data-action="${KEY_ACTIONS[event.key.toUpperCase()] ?? '-'}"]`;
     const button = controlsEl.querySelector<HTMLButtonElement>(selector);
     if (button !== null && !button.disabled) {
@@ -858,6 +1131,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
 
   root.addEventListener('click', onClick);
   root.addEventListener('change', onChange);
+  root.addEventListener('toggle', onToggle, true);
   window.addEventListener('keydown', onKey);
   if (client !== null) unsubscribe = client.subscribe(render);
   render();
@@ -873,6 +1147,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     setCheatTarget(null);
     root.removeEventListener('click', onClick);
     root.removeEventListener('change', onChange);
+    root.removeEventListener('toggle', onToggle, true);
     window.removeEventListener('keydown', onKey);
   };
 }
