@@ -81,7 +81,7 @@ function lobbyHtml(): string {
         <a class="tile tile-blackjack" href="#/blackjack">
           <span class="tile-suits" aria-hidden="true">♠ ♥</span>
           <h2>Blackjack</h2>
-          <p>Plusieurs mains à la fois · devenez croupier face à 8 bots · table partagée jusqu'à 8 joueurs via un lien</p>
+          <p>Plusieurs mains à la fois · devenez croupier : vos règles de la maison, pourboires et note de service · table partagée jusqu'à 8 joueurs</p>
           ${balanceHtml(lobbyBalance('blackjack'))}
           <span class="tile-cta">S'asseoir</span>
         </a>
