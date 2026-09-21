@@ -4,13 +4,23 @@ import { cardValue, scoreHand, type BlackjackPlayerActionType, type BlackjackRul
 /** Coups de jeu d'un bot : jamais de mise ni de siège pendant son tour. */
 export type BotMove = Extract<BlackjackPlayerActionType, 'HIT' | 'STAND' | 'DOUBLE_DOWN' | 'SPLIT' | 'SURRENDER'>;
 
-const BOT_BETS = [10, 25, 50, 100] as const;
+/** Mises d'un bot en multiples du minimum de table : 10 · 25 · 50 · 100 sur une table à 10. */
+const BOT_BET_STEPS = [1, 2.5, 5, 10] as const;
 
-/** Mise d'un bot : un jeton courant qu'il peut couvrir, ou le minimum de table s'il est à court ; null s'il ne peut plus jouer. */
-export function chooseBotBet(bankroll: number, rules: BlackjackRules, rng: RandomSource): number | null {
-  const affordable = BOT_BETS.filter((amount) => amount >= rules.minBet && amount <= Math.min(bankroll, rules.maxBet));
-  if (affordable.length > 0) return affordable[rng.nextInt(affordable.length)] ?? rules.minBet;
-  return bankroll >= rules.minBet ? rules.minBet : null;
+/**
+ * Mise d'un bot : un multiple du minimum qu'il peut couvrir, ou le minimum s'il est à court ; null s'il ne peut plus
+ * jouer. L'appétit (règles de la maison) resserre les mises vers le bas sur une table serrée, vers le haut sur une
+ * table généreuse.
+ */
+export function chooseBotBet(bankroll: number, rules: BlackjackRules, rng: RandomSource, appetite = 1): number | null {
+  const affordable = BOT_BET_STEPS.map((step) => Math.round(rules.minBet * step)).filter(
+    (amount) => amount >= rules.minBet && amount <= Math.min(bankroll, rules.maxBet),
+  );
+  if (affordable.length === 0) return bankroll >= rules.minBet ? rules.minBet : null;
+  const count = Math.max(1, Math.min(affordable.length, Math.round(affordable.length * Math.min(1, appetite))));
+  let index = rng.nextInt(count);
+  if (appetite > 1.15) index = Math.max(index, rng.nextInt(count));
+  return affordable[index] ?? rules.minBet;
 }
 
 /** Carte visible du croupier pour la stratégie : l'As compte 11. */
