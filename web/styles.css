@@ -196,6 +196,52 @@ button.bet-spot:hover { transform: translateY(-2px); }
 .bot-badge { background: rgba(255, 255, 255, 0.08); color: var(--muted); font-size: 10px; padding: 1px 6px; }
 .seat-credit { padding: 2px 9px; border-radius: 999px; border: 1px solid rgba(224, 184, 79, 0.45); background: transparent; color: var(--gold); font-size: 11px; font-weight: 700; cursor: pointer; }
 .seat-credit:hover { background: rgba(224, 184, 79, 0.16); }
+/* Poste du croupier : service en cours, règles de la maison, note de fin de service. */
+.dealer-desk { width: 100%; max-width: 780px; display: flex; flex-direction: column; gap: 10px; }
+.dealer-desk:empty { display: none; }
+.service-bar { margin: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 16px; font-size: 13px; color: rgba(244, 239, 226, 0.75); }
+.service-bar strong { color: var(--gold); font-variant-numeric: tabular-nums; }
+.house-panel { border-radius: 16px; background: rgba(0, 0, 0, 0.22); border: 1px solid rgba(224, 184, 79, 0.25); }
+.house-panel summary { padding: 10px 14px; cursor: pointer; font-size: 14px; text-align: center; list-style-position: inside; }
+.house-panel summary strong { color: var(--gold); font-variant-numeric: tabular-nums; }
+.house-panel[open] summary { border-bottom: 1px solid var(--line); }
+.house-effects { margin: 10px 14px 0; font-size: 13px; line-height: 1.5; color: rgba(244, 239, 226, 0.8); }
+.house-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px 18px; padding: 12px 14px 14px; }
+.house-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.house-label { font-size: 13px; color: var(--muted); }
+.seg { display: inline-flex; flex-wrap: wrap; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+.seg-btn { padding: 6px 10px; border: 0; border-left: 1px solid var(--line); background: #141c17; color: var(--text); font-size: 13px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.seg-btn:first-child { border-left: 0; }
+.seg-btn[aria-pressed="true"] { background: linear-gradient(180deg, var(--gold), var(--gold-deep)); color: #1a1405; font-weight: 700; }
+.seg-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.seg-btn[aria-pressed="true"]:disabled { opacity: 0.75; }
+.house-lock { margin: 0 14px 12px; font-size: 12px; color: var(--muted); text-align: center; }
+.mood { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.mood-generous { background: rgba(76, 195, 138, 0.2); color: var(--win); }
+.mood-balanced { background: rgba(224, 184, 79, 0.18); color: var(--gold); }
+.mood-tight { background: rgba(255, 183, 77, 0.18); color: #ffb74d; }
+.mood-stingy { background: rgba(255, 138, 128, 0.18); color: #ff8a80; }
+.service-summary { display: flex; gap: 18px; align-items: center; padding: 16px 18px; border-radius: 18px; background: rgba(8, 12, 10, 0.72); border: 1px solid rgba(224, 184, 79, 0.45); }
+.grade { flex: none; width: 76px; height: 76px; border-radius: 20px; display: grid; place-items: center; font: 800 44px/1 "Playfair Display", Georgia, serif; background: #26332b; color: var(--text); }
+.grade-s { background: linear-gradient(135deg, #fff3b0, var(--gold) 45%, #b8902d); color: #1a1405; box-shadow: 0 0 30px rgba(224, 184, 79, 0.55); }
+.grade-a { background: var(--gold); color: #1a1405; }
+.grade-b { background: var(--win); color: #062414; }
+.grade-c { background: #5f6b64; }
+.grade-d { background: #7d1f28; }
+.summary-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.summary-body h3 { margin: 0; font-size: 18px; }
+.summary-body p { margin: 0; font-size: 13px; color: rgba(244, 239, 226, 0.8); }
+.summary-parts { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+.summary-parts li { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: baseline; }
+.summary-parts .part-detail { color: var(--muted); }
+.summary-parts strong { color: var(--gold); font-variant-numeric: tabular-nums; }
+.summary-record { color: var(--gold) !important; font-weight: 700; }
+.seat-extras { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.seat-extras .badge { font-size: 11px; padding: 2px 8px; }
+.side-badge { background: rgba(123, 63, 184, 0.35); color: #e4ccff; }
+.side-win { background: #7b3fb8; color: #fff; }
+.side-loss { background: rgba(255, 255, 255, 0.08); color: var(--muted); }
+.tip-badge { background: rgba(224, 184, 79, 0.2); color: var(--gold); }
 .grant-panel { flex: 1 1 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .grant-title { margin: 0; font-size: 15px; }
 .grant-title strong { color: var(--gold); }
@@ -851,5 +897,13 @@ a.btn { text-decoration: none; }
   .bj-seats.crowded .bj-seat.shared { padding: 6px 8px; }
   .bj-seats.crowded .bet-spot.small { width: 52px; height: 52px; }
   .grant-input { flex: 1 1 100%; width: auto; }
+  .house-grid { grid-template-columns: 1fr; padding: 10px; }
+  .house-row { flex-direction: column; align-items: stretch; gap: 4px; }
+  .seg { display: flex; }
+  .seg-btn { flex: 1 1 0; padding: 9px 4px; }
+  .service-summary { flex-direction: column; text-align: center; }
+  .summary-parts li { grid-template-columns: 1fr auto; text-align: left; }
+  .summary-parts .part-detail { grid-column: 1; grid-row: 2; font-size: 12px; }
+  .summary-parts strong { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
   .grant-row .btn { flex: 1 1 auto; }
 }
