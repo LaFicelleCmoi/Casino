@@ -10,7 +10,30 @@ import {
   type BlackjackTableView,
 } from '../src/blackjack/index.js';
 import { chooseBotBet, chooseBotMove } from './blackjack-bot.js';
-import { DEFAULT_BALANCE } from './money-ledger.js';
+import {
+  DEFAULT_HOUSE,
+  EMPTY_SERVICE,
+  PERFECT_PAIRS_EDGE,
+  PERFECT_PAIRS_PAYOUTS,
+  SLOW_GESTURE_MS,
+  applyHouseRules,
+  arrivalChance,
+  betAppetite,
+  departureChance,
+  guestTip,
+  houseEdge,
+  parseHouseRules,
+  perfectPair,
+  serviceNote,
+  sideBetSteps,
+  speedFactor,
+  tipAmount,
+  tipChance,
+  type HouseRules,
+  type PerfectPair,
+  type ServiceNote,
+  type ServiceStats,
+} from './blackjack-house.js';
 import { MAX_TABLE_PLAYERS } from './net/peer-link.js';
 import { cleanPlayerName } from './net/player-name.js';
 import type { HostedTable } from './net/shared-table.js';
@@ -22,7 +45,12 @@ export const BLACKJACK_TABLE_RULES: BlackjackRules = { ...STANDARD_BLACKJACK_RUL
 /** Créateur de la table ; les invités reçoivent « invite-1 », « invite-2 »…, les bots « bot-<place> ». */
 export const BLACKJACK_HOST: PlayerId = playerId('hote');
 
-const BOT_NAMES = ['Léa', 'Hugo', 'Nora', 'Malik', 'Inès', 'Sacha', 'Yanis', 'Zoé'] as const;
+const BOT_NAMES = [
+  'Léa', 'Hugo', 'Nora', 'Malik', 'Inès', 'Sacha', 'Yanis', 'Zoé',
+  'Jules', 'Maya', 'Noé', 'Lina', 'Adam', 'Rose', 'Ilyes', 'Chloé',
+] as const;
+/** Part des bots qui tentent les Paires parfaites quand la table les propose. */
+const BOT_SIDE_BET_PERCENT = 35;
 const BOT_DELAY_MS = 700;
 /** Plafond d'un crédit offert par le créateur, comme pour les codes de triche. */
 const MAX_GRANT = 1_000_000_000_000;
@@ -53,14 +81,51 @@ export type BlackjackTableCommand =
   /** Créateur croupier uniquement : distribuer, retourner la carte cachée, tirer, s'arrêter. */
   | { readonly type: 'DEALER'; readonly action: BlackjackDealerMove }
   /** Créateur uniquement : rendre des jetons à un joueur qui a rejoint la table, sans toucher à sa banque. */
-  | { readonly type: 'GRANT'; readonly target: string; readonly amount: number };
+  | { readonly type: 'GRANT'; readonly target: string; readonly amount: number }
+  /** Créateur croupier, entre deux manches : règles de la maison (paiements, sabot, limites, pari annexe, service). */
+  | { readonly type: 'HOUSE_RULES'; readonly rules: HouseRules }
+  /** Créateur croupier : service noté terminé, on en commence un autre. */
+  | { readonly type: 'NEW_SERVICE' }
+  /** Mise « Paires parfaites » (0 pour la retirer), avant la donne, quand le croupier la propose. */
+  | { readonly type: 'SIDE_BET'; readonly amount: number }
+  /** Pourboire d'un joueur au croupier humain. */
+  | { readonly type: 'TIP' };
+
+export interface SideBetResult {
+  readonly seatIndex: number;
+  readonly stake: number;
+  readonly pair: PerfectPair | null;
+  /** Gain net du joueur : négatif s'il perd sa mise. */
+  readonly net: number;
+}
+
+export interface SeatTip {
+  readonly seatIndex: number;
+  readonly amount: number;
+}
+
+export interface BlackjackService {
+  readonly length: number;
+  readonly stats: ServiceStats;
+  /** Présente une fois le service terminé. */
+  readonly note: ServiceNote | null;
+}
 
 export interface BlackjackDealerInfo {
   readonly name: string;
   /** Banque du croupier : elle encaisse les mises perdues et paie les gains des joueurs. */
   readonly bank: number;
-  /** Variation de la banque sur la dernière manche réglée. */
-  readonly lastRound: { readonly roundNumber: number; readonly net: number } | null;
+  /** Variation de la banque et pourboires reçus sur la dernière manche réglée. */
+  readonly lastRound: { readonly roundNumber: number; readonly net: number; readonly tips: number } | null;
+  /** Cagnotte des pourboires du service, versée au solde du croupier à la fin du service. */
+  readonly tips: number;
+  /** Pourboires de la manche, par place. */
+  readonly roundTips: readonly SeatTip[];
+  /** Départs et arrivées de joueurs au début de la manche. */
+  readonly movement: { readonly left: readonly string[]; readonly arrived: readonly string[] } | null;
+  /** Dernier pourboire laissé par un vrai joueur : son numéro change à chaque nouveau pourboire. */
+  readonly lastGuestTip: { readonly name: string; readonly amount: number; readonly serial: number } | null;
+  readonly service: BlackjackService;
 }
 
 export interface BlackjackSnapshot {
@@ -77,11 +142,19 @@ export interface BlackjackSnapshot {
   readonly dealer: BlackjackDealerInfo | null;
   /** Total des jetons rendus par le créateur à ce joueur : sa hausse prévient le joueur crédité. */
   readonly credited: number;
+  /** Règles de la maison en vigueur (standard hors mode croupier). */
+  readonly house: HouseRules;
+  /** Mises « Paires parfaites » posées pour la prochaine donne. */
+  readonly sideBets: readonly SeatTip[];
+  /** Résultats des Paires parfaites de la manche en cours. */
+  readonly sideResults: readonly SideBetResult[];
+  /** Total des pourboires laissés par ce joueur : sa hausse est comptée à son bilan. */
+  readonly tipped: number;
 }
 
 function parseCommand(raw: unknown): BlackjackTableCommand | null {
   if (typeof raw !== 'object' || raw === null) return null;
-  const { type, amount, box, bankroll, name, enabled, action, target } = raw as Record<string, unknown>;
+  const { type, amount, box, bankroll, name, enabled, action, target, rules } = raw as Record<string, unknown>;
   if (isSeatAction(type)) return { type };
   switch (type) {
     case 'PLACE_BET':
@@ -100,6 +173,16 @@ function parseCommand(raw: unknown): BlackjackTableCommand | null {
       return isDealerMove(action) ? { type: 'DEALER', action } : null;
     case 'GRANT':
       return typeof target === 'string' && typeof amount === 'number' ? { type: 'GRANT', target, amount } : null;
+    case 'HOUSE_RULES': {
+      const house = parseHouseRules(rules);
+      return house === null ? null : { type: 'HOUSE_RULES', rules: house };
+    }
+    case 'NEW_SERVICE':
+      return { type: 'NEW_SERVICE' };
+    case 'SIDE_BET':
+      return typeof amount === 'number' ? { type: 'SIDE_BET', amount } : null;
+    case 'TIP':
+      return { type: 'TIP' };
     default:
       return null;
   }
@@ -134,6 +217,31 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
   #bank = 0;
   #lastRound: BlackjackDealerInfo['lastRound'] = null;
   #timer: number | undefined;
+  /** Règles choisies par le croupier, gardées quand il redevient joueur pour son prochain service. */
+  #house: HouseRules = DEFAULT_HOUSE;
+  readonly #sideBets = new Map<PlayerId, number>();
+  /** Bots qui ont déjà décidé de leur pari annexe pour la prochaine donne. */
+  readonly #sideDecided = new Set<PlayerId>();
+  #sideResults: SideBetResult[] = [];
+  /** Gain de la banque sur les Paires parfaites de la manche, encaissé au règlement avec le reste. */
+  #sideBankNet = 0;
+  #jar = 0;
+  #roundTips: SeatTip[] = [];
+  #tipsSinceSettle = 0;
+  #lastGuestTip: BlackjackDealerInfo['lastGuestTip'] = null;
+  readonly #tipped = new Map<PlayerId, number>();
+  #movement: BlackjackDealerInfo['movement'] = null;
+  /** Manche dont les départs et arrivées ont déjà été tirés. */
+  #movedRound = -1;
+  /** Le croupier vient de prendre son poste : toutes les places libres se remplissent d'un coup. */
+  #fillAll = false;
+  #service: ServiceStats = EMPTY_SERVICE;
+  #note: ServiceNote | null = null;
+  /** Depuis quand le croupier doit faire un geste, pour mesurer sa rapidité. */
+  #gestureSince: number | null = null;
+  #roundGestures = { count: 0, ms: 0 };
+  /** Pendant la donne du croupier : le règlement attend que les Paires parfaites soient payées. */
+  #deferSettle = false;
 
   constructor(engine: BlackjackController, rng: RandomSource, hostName: string, hostBankroll: number) {
     this.#engine = engine;
@@ -197,6 +305,8 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     this.#ready.delete(id);
     this.#notices.delete(id);
     this.#credits.delete(id);
+    this.#sideBets.delete(id);
+    this.#tipped.delete(id);
     if (this.#seatOf(id) !== null) this.#leaving.add(id);
     this.#settle();
   }
@@ -218,9 +328,25 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       notice: this.#notices.get(id) ?? null,
       players: this.#playerCount(),
       dealer: this.#dealerMode
-        ? { name: this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null), bank: this.#bank, lastRound: this.#lastRound }
+        ? {
+            name: this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null),
+            bank: this.#bank,
+            lastRound: this.#lastRound,
+            tips: this.#jar,
+            roundTips: this.#roundTips,
+            movement: this.#movement,
+            lastGuestTip: this.#lastGuestTip,
+            service: { length: this.#house.serviceLength, stats: this.#service, note: this.#note },
+          }
         : null,
       credited: this.#credits.get(id) ?? 0,
+      house: this.#houseInForce(),
+      sideBets: [...this.#sideBets].flatMap(([player, amount]) => {
+        const seat = this.#seatOf(player);
+        return seat === null ? [] : [{ seatIndex: seat.seatIndex, amount }];
+      }),
+      sideResults: this.#state.phase === 'BETTING' ? [] : this.#sideResults,
+      tipped: this.#tipped.get(id) ?? 0,
     };
   }
 
@@ -259,11 +385,28 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       case 'DEALER':
         if (!host || !this.#dealerMode) this.#notices.set(id, 'Seul le croupier joue ce coup.');
         else if (command.action === 'DEAL') this.#dealerDeal();
-        else this.#apply(id, { type: command.action });
+        else {
+          this.#timeGesture();
+          this.#apply(id, { type: command.action });
+        }
         return;
       case 'GRANT':
         if (host) this.#grant(playerId(command.target), command.amount);
         else this.#notices.set(id, 'Seul le créateur de la table rend des jetons.');
+        return;
+      case 'HOUSE_RULES':
+        if (host && this.#dealerMode) this.#setHouse(command.rules);
+        else this.#notices.set(id, 'Seul le croupier fixe les règles de la maison.');
+        return;
+      case 'NEW_SERVICE':
+        if (host && this.#dealerMode) this.#newService();
+        else this.#notices.set(id, 'Seul le croupier commence un service.');
+        return;
+      case 'SIDE_BET':
+        this.#placeSideBet(id, command.amount);
+        return;
+      case 'TIP':
+        this.#tip(id);
         return;
       default:
         this.#apply(id, { type: command.type, playerId: id });
@@ -279,28 +422,196 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     }
     const wasOver = this.#state.phase === 'ROUND_OVER';
     this.#state = result.value.state;
-    if (this.#dealerMode && !wasOver && this.#state.phase === 'ROUND_OVER') this.#settleBank();
+    if (this.#dealerMode && !this.#deferSettle && !wasOver && this.#state.phase === 'ROUND_OVER') this.#settleBank();
     return true;
   }
 
-  /** La banque encaisse ce que les joueurs perdent et paie ce qu'ils gagnent ; elle ne descend jamais sous zéro. */
+  /**
+   * La banque encaisse ce que les joueurs perdent (Paires parfaites comprises) et paie ce qu'ils gagnent ; elle ne
+   * descend jamais sous zéro. Les gagnants laissent ensuite leurs pourboires, et le service avance d'une manche.
+   */
   #settleBank(): void {
     const state = this.#state;
     if (state.phase !== 'ROUND_OVER') return;
     const players =
       sum(state.settlements.map((settlement) => settlement.returned - settlement.stake)) +
       sum(state.insuranceSettlements.map((settlement) => settlement.returned - settlement.stake));
-    const bank = Math.max(0, this.#bank - players);
-    this.#lastRound = { roundNumber: state.roundNumber, net: bank - this.#bank };
+    const bank = Math.max(0, this.#bank - players + this.#sideBankNet);
+    const net = bank - this.#bank;
     this.#bank = bank;
+    this.#sideBankNet = 0;
+    this.#tipBots(state);
+    this.#lastRound = { roundNumber: state.roundNumber, net, tips: this.#tipsSinceSettle };
+    this.#tipsSinceSettle = 0;
+    this.#service = { ...this.#service, rounds: this.#service.rounds + 1, bankNet: this.#service.bankNet + net };
+    if (this.#note === null && this.#service.rounds >= this.#house.serviceLength) this.#endService();
+  }
+
+  /** Les bots gagnants laissent parfois un pourboire : plus souvent à une table généreuse et à un croupier vif. */
+  #tipBots(state: Extract<BlackjackState, { phase: 'ROUND_OVER' }>): void {
+    const average = this.#roundGestures.count === 0 ? null : this.#roundGestures.ms / this.#roundGestures.count;
+    const chance = tipChance(this.#house) * speedFactor(average);
+    for (const seat of this.#state.seats) {
+      if (seat === null || !isBotPlayer(seat.player.id)) continue;
+      const settlements = state.settlements.filter((settlement) => settlement.seatIndex === seat.seatIndex);
+      const won = sum(settlements.map((settlement) => settlement.returned - settlement.stake));
+      if (won <= 0 || !this.#chance(chance)) continue;
+      const blackjack = settlements.some((settlement) => settlement.outcome === 'BLACKJACK');
+      const amount = Math.min(seat.bankroll, tipAmount(sum(settlements.map((settlement) => settlement.stake)), blackjack));
+      if (amount > 0) this.#payTip(seat, amount);
+    }
+  }
+
+  /** Un joueur verse un pourboire : il quitte sa bankroll pour la cagnotte du croupier. */
+  #payTip(seat: BlackjackSeat, amount: number): void {
+    const paid: BlackjackSeat = { ...seat, bankroll: chips(seat.bankroll - amount) };
+    this.#state = { ...this.#state, seats: this.#state.seats.map((current) => (current?.seatIndex === seat.seatIndex ? paid : current)) };
+    this.#jar += amount;
+    this.#tipsSinceSettle += amount;
+    this.#roundTips = [...this.#roundTips, { seatIndex: seat.seatIndex, amount }];
+    this.#service = { ...this.#service, tips: this.#service.tips + amount };
+  }
+
+  /** Pourboire d'un vrai joueur, d'un clic, à n'importe quel moment. */
+  #tip(id: PlayerId): void {
+    const seat = this.#seatOf(id);
+    if (!this.#dealerMode || id === BLACKJACK_HOST || seat === null) {
+      this.#notices.set(id, 'Il faut être assis face à un croupier pour laisser un pourboire.');
+      return;
+    }
+    const amount = guestTip(this.#house);
+    if (seat.bankroll < amount) {
+      this.#notices.set(id, 'Pas assez de jetons pour ce pourboire.');
+      return;
+    }
+    this.#payTip(seat, amount);
+    this.#tipped.set(id, (this.#tipped.get(id) ?? 0) + amount);
+    this.#lastGuestTip = { name: seat.player.displayName, amount, serial: (this.#lastGuestTip?.serial ?? 0) + 1 };
+  }
+
+  #placeSideBet(id: PlayerId, amount: number): void {
+    const seat = this.#seatOf(id);
+    if (!this.#dealerMode || !this.#house.perfectPairs) this.#notices.set(id, 'Cette table ne propose pas les Paires parfaites.');
+    else if (this.#state.phase !== 'BETTING') this.#notices.set(id, 'Les Paires parfaites se misent avant la donne.');
+    else if (seat === null) this.#notices.set(id, 'Asseyez-vous pour miser.');
+    else if (!sideBetSteps(this.#house).includes(amount)) this.#notices.set(id, 'Mise annexe invalide.');
+    else if (amount > seat.bankroll) this.#notices.set(id, 'Pas assez de jetons pour cette mise annexe.');
+    else if (amount === 0) this.#sideBets.delete(id);
+    else this.#sideBets.set(id, amount);
+  }
+
+  /** Paie les Paires parfaites sur les deux premières cartes de la première main, juste après la donne. */
+  #settleSideBets(): number {
+    this.#sideResults = [];
+    let staked = 0;
+    for (const [id, stake] of this.#sideBets) {
+      const seat = this.#seatOf(id);
+      const [first, second] = seat?.hands[0]?.cards ?? [];
+      if (seat === null || first === undefined || second === undefined || seat.bankroll < stake) continue;
+      const pair = perfectPair(first, second);
+      const payout = pair === null ? 0 : stake * (PERFECT_PAIRS_PAYOUTS[pair] + 1);
+      const settled: BlackjackSeat = { ...seat, bankroll: chips(seat.bankroll - stake + payout) };
+      this.#state = { ...this.#state, seats: this.#state.seats.map((current) => (current === seat ? settled : current)) };
+      staked += stake;
+      this.#sideBankNet += stake - payout;
+      this.#sideResults.push({ seatIndex: seat.seatIndex, stake, pair, net: payout - stake });
+    }
+    this.#sideBets.clear();
+    return staked;
   }
 
   #dealerDeal(): void {
+    if (this.#note !== null) {
+      this.#notices.set(BLACKJACK_HOST, 'Service terminé : lancez un nouveau service pour distribuer.');
+      return;
+    }
     if (this.#bank <= 0) {
       this.#notices.set(BLACKJACK_HOST, 'La banque est vide : rechargez-la pour distribuer.');
       return;
     }
-    if (this.#apply(BLACKJACK_HOST, { type: 'DEAL' })) this.#ready.clear();
+    this.#deferSettle = true;
+    const dealt = this.#apply(BLACKJACK_HOST, { type: 'DEAL' });
+    this.#deferSettle = false;
+    if (!dealt) return;
+    this.#ready.clear();
+    this.#sideDecided.clear();
+    this.#roundTips = [];
+    this.#movement = null;
+    this.#roundGestures = { count: 0, ms: 0 };
+    const seats = this.#state.seats.filter((seat): seat is BlackjackSeat => seat !== null);
+    const main = sum(seats.flatMap((seat) => seat.hands.map((hand) => hand.bet)));
+    const side = this.#settleSideBets();
+    const service = this.#service;
+    this.#service = {
+      ...service,
+      wagered: service.wagered + main + side,
+      theo: service.theo + (main * houseEdge(this.#house) + side * PERFECT_PAIRS_EDGE) / 100,
+      seatsFilled: service.seatsFilled + seats.length,
+      deals: service.deals + 1,
+    };
+    // Blackjack du croupier vu dès la donne : la manche est déjà finie, on la règle maintenant.
+    if (this.#state.phase === 'ROUND_OVER') this.#settleBank();
+  }
+
+  /** Mesure le temps de réaction du croupier sur chaque geste de sa main. */
+  #timeGesture(): void {
+    if (this.#gestureSince === null) return;
+    const ms = Date.now() - this.#gestureSince;
+    this.#gestureSince = null;
+    this.#roundGestures = { count: this.#roundGestures.count + 1, ms: this.#roundGestures.ms + ms };
+    this.#service = { ...this.#service, gestures: this.#service.gestures + 1, gestureMs: this.#service.gestureMs + ms };
+  }
+
+  /** Fin du service : la note tombe et la cagnotte des pourboires rejoint la banque, donc le solde du croupier. */
+  #endService(): void {
+    this.#note = serviceNote(this.#service, this.#house.minBet, this.#state.rules.seatCount);
+    this.#bank += this.#jar;
+    this.#jar = 0;
+  }
+
+  #newService(): void {
+    this.#bank += this.#jar;
+    this.#jar = 0;
+    this.#service = EMPTY_SERVICE;
+    this.#note = null;
+    if (this.#state.phase === 'ROUND_OVER') this.#apply(BLACKJACK_HOST, { type: 'NEXT_ROUND' });
+  }
+
+  #houseInForce(): HouseRules {
+    return this.#dealerMode ? this.#house : DEFAULT_HOUSE;
+  }
+
+  #setHouse(next: HouseRules): void {
+    const { phase } = this.#state;
+    if (phase !== 'BETTING' && phase !== 'ROUND_OVER') {
+      this.#notices.set(BLACKJACK_HOST, 'Les règles de la maison changent entre deux manches.');
+      return;
+    }
+    const previous = this.#houseInForce();
+    this.#house = next;
+    this.#enforce(previous);
+    if (this.#note === null && this.#service.rounds > 0 && this.#service.rounds >= next.serviceLength) this.#endService();
+  }
+
+  /**
+   * Met les règles du moteur en accord avec la maison. Un autre nombre de jeux remélange le sabot à la prochaine
+   * donne ; d'autres limites annulent les mises posées, que chacun replace.
+   */
+  #enforce(previous: HouseRules): void {
+    const house = this.#houseInForce();
+    const state = this.#state;
+    const rules = { ...applyHouseRules(state.rules, house), dealerPlay: this.#dealerMode ? ('MANUAL' as const) : ('AUTO' as const) };
+    const shoe = house.decks === previous.decks ? state.shoe : { ...state.shoe, cutCardIndex: 0 };
+    this.#state = { ...state, rules, shoe };
+    if (!house.perfectPairs) this.#sideBets.clear();
+    if (house.minBet !== previous.minBet || house.maxBet !== previous.maxBet) {
+      for (const seat of this.#state.seats) {
+        if (seat !== null && seat.pendingBets.length > 0) this.#apply(null, { type: 'CLEAR_BET', playerId: seat.player.id });
+      }
+      this.#sideBets.clear();
+      this.#sideDecided.clear();
+      this.#ready.clear();
+    }
   }
 
   /** Changement de rôle du créateur, entre deux manches : son solde devient la banque, ou la banque redevient son solde. */
@@ -311,21 +622,31 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       this.#notices.set(BLACKJACK_HOST, 'Le changement de rôle se fait entre deux manches.');
       return;
     }
+    const previous = this.#houseInForce();
     if (enabled) {
       const seat = this.#seatOf(BLACKJACK_HOST);
       this.#bank = seat === null ? 0 : seat.bankroll + sum(seat.pendingBets);
-      this.#lastRound = null;
       if (seat !== null) this.#apply(null, { type: 'LEAVE_SEAT', playerId: BLACKJACK_HOST });
+      this.#fillAll = true;
+      this.#movedRound = this.#state.roundNumber;
     } else {
       for (const seat of this.#state.seats) {
         if (seat !== null && isBotPlayer(seat.player.id)) this.#apply(null, { type: 'LEAVE_SEAT', playerId: seat.player.id });
       }
-      if (this.#bank > 0) this.#sit(BLACKJACK_HOST, this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null), this.#bank);
+      const balance = this.#bank + this.#jar;
+      if (balance > 0) this.#sit(BLACKJACK_HOST, this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null), balance);
       this.#bank = 0;
-      this.#lastRound = null;
     }
+    this.#jar = 0;
+    this.#lastRound = null;
+    this.#roundTips = [];
+    this.#movement = null;
+    this.#service = EMPTY_SERVICE;
+    this.#note = null;
+    this.#sideBets.clear();
+    this.#sideResults = [];
     this.#dealerMode = enabled;
-    this.#state = { ...this.#state, rules: { ...this.#state.rules, dealerPlay: enabled ? 'MANUAL' : 'AUTO' } };
+    this.#enforce(previous);
     this.#ready.clear();
   }
 
@@ -412,6 +733,9 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     for (let guard = 0; guard < 200 && this.#step(); guard += 1) {
       // Chaque étape modifie l'état : on recommence jusqu'à stabilité.
     }
+    // Le chronomètre du croupier tourne dès qu'un geste l'attend.
+    if (this.#dealerMode && this.#state.phase === 'DEALER_TURN') this.#gestureSince ??= Date.now();
+    else this.#gestureSince = null;
     for (const listener of [...this.#listeners]) listener();
     this.#scheduleBot();
   }
@@ -461,36 +785,46 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     return false;
   }
 
-  /** Bots de la table du croupier : recave, place cédée aux invités, une place libre = un bot, puis mise et assurance. */
+  /**
+   * Bots de la table du croupier : place cédée aux invités, table remplie à la prise de poste, puis à chaque manche des
+   * départs et des arrivées selon les règles de la maison ; enfin mises, Paires parfaites et assurance.
+   */
   #botStep(state: BlackjackState, betweenRounds: boolean): boolean {
     const { rules } = state;
     const bots = state.seats.filter((seat): seat is BlackjackSeat => seat !== null && isBotPlayer(seat.player.id));
 
     if (betweenRounds) {
-      const broke = bots.find((bot) => !canBet(bot, rules));
-      if (broke !== undefined) {
-        this.#apply(null, { type: 'LEAVE_SEAT', playerId: broke.player.id });
-        this.#sit(broke.player.id, broke.player.displayName, DEFAULT_BALANCE, broke.seatIndex);
-        return true;
-      }
       const freeSeat = state.seats.indexOf(null);
       if (this.#queue.size > 0) {
         // Un invité attend et la table est pleine : le dernier bot lui cède sa place.
         const leaving = bots.at(-1);
         return freeSeat === -1 && leaving !== undefined && this.#apply(null, { type: 'LEAVE_SEAT', playerId: leaving.player.id });
       }
-      if (freeSeat !== -1 && this.#engine.project(state, null).freePlaces >= 1) {
-        const taken = new Set(state.seats.map((seat) => seat?.player.displayName));
-        const name = BOT_NAMES.find((candidate) => !taken.has(candidate)) ?? `Bot ${freeSeat + 1}`;
-        return this.#sit(playerId(`bot-${freeSeat}`), name, DEFAULT_BALANCE, freeSeat);
+      if (this.#fillAll) {
+        if (freeSeat !== -1 && this.#engine.project(state, null).freePlaces >= 1 && this.#sitBot(freeSeat) !== null) return true;
+        this.#fillAll = false;
       }
+    }
+
+    if (state.phase === 'BETTING' && this.#movedRound !== state.roundNumber) {
+      this.#movedRound = state.roundNumber;
+      this.#moveBots(bots);
+      return true;
     }
 
     if (state.phase === 'BETTING') {
       const bettor = bots.find((bot) => bot.pendingBets.length === 0 && canBet(bot, rules));
-      const amount = bettor === undefined ? null : chooseBotBet(bettor.bankroll, rules, this.#rng);
+      const amount = bettor === undefined ? null : chooseBotBet(bettor.bankroll, rules, this.#rng, betAppetite(this.#house));
       if (bettor !== undefined && amount !== null) {
         return this.#apply(null, { type: 'PLACE_BET', playerId: bettor.player.id, amount: chips(amount) });
+      }
+      const deciding = this.#house.perfectPairs
+        ? bots.find((bot) => bot.pendingBets.length > 0 && !this.#sideDecided.has(bot.player.id))
+        : undefined;
+      if (deciding !== undefined) {
+        this.#sideDecided.add(deciding.player.id);
+        if (this.#rng.nextInt(100) < BOT_SIDE_BET_PERCENT && deciding.bankroll >= rules.minBet) this.#sideBets.set(deciding.player.id, rules.minBet);
+        return true;
       }
     }
 
@@ -499,6 +833,40 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       if (deciding !== undefined) return this.#apply(null, { type: 'DECLINE_INSURANCE', playerId: deciding.player.id });
     }
     return false;
+  }
+
+  /** Début de manche : les bots ruinés ou lassés partent, les places libres trouvent preneur selon l'attrait de la table. */
+  #moveBots(bots: readonly BlackjackSeat[]): void {
+    const { rules } = this.#state;
+    const slow = this.#roundGestures.count > 0 && this.#roundGestures.ms / this.#roundGestures.count > SLOW_GESTURE_MS;
+    const leaveChance = departureChance(this.#house, slow);
+    const left: string[] = [];
+    for (const bot of bots) {
+      if (canBet(bot, rules) && !this.#chance(leaveChance)) continue;
+      if (this.#apply(null, { type: 'LEAVE_SEAT', playerId: bot.player.id })) left.push(bot.player.displayName);
+    }
+    const arrived: string[] = [];
+    const arriveChance = arrivalChance(this.#house);
+    for (let seatIndex = 0; seatIndex < rules.seatCount; seatIndex += 1) {
+      if (this.#queue.size > 0 || this.#engine.project(this.#state, null).freePlaces < 1) break;
+      if (this.#state.seats[seatIndex] !== null || !this.#chance(arriveChance)) continue;
+      const name = this.#sitBot(seatIndex);
+      if (name !== null) arrived.push(name);
+    }
+    this.#movement = left.length + arrived.length > 0 ? { left, arrived } : null;
+  }
+
+  /** Un nouveau bot s'assoit avec 50 à 150 fois le minimum de table. */
+  #sitBot(seatIndex: number): string | null {
+    const taken = new Set(this.#state.seats.map((seat) => seat?.player.displayName));
+    const free = BOT_NAMES.filter((candidate) => !taken.has(candidate));
+    const name = free[this.#rng.nextInt(Math.max(1, free.length))] ?? `Bot ${seatIndex + 1}`;
+    const bankroll = this.#state.rules.minBet * (50 + this.#rng.nextInt(101));
+    return this.#sit(playerId(`bot-${seatIndex}`), name, bankroll, seatIndex) ? name : null;
+  }
+
+  #chance(probability: number): boolean {
+    return this.#rng.nextInt(10_000) < probability * 10_000;
   }
 
   /** Un bot joue son tour après un court délai, pour que la table voie ses coups un par un. */
