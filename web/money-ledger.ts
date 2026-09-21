@@ -98,8 +98,11 @@ function writeLedger(ledger: Ledger): void {
   writeJson(LEDGER_KEY, Object.fromEntries(stored));
 }
 
-/** Enregistre le résultat net (positif = gain, négatif = perte) d'une manche terminée. */
-export function recordResult(game: GameKey, net: number | bigint): Ledger {
+/**
+ * Enregistre le résultat net (positif = gain, négatif = perte) d'une manche terminée. `countsAsRound` à false pour une
+ * dépense hors manche (pourboire) : elle pèse sur le bilan sans ajouter de manche.
+ */
+export function recordResult(game: GameKey, net: number | bigint, countsAsRound = true): Ledger {
   const delta = BigInt(net);
   const ledger = loadLedger();
   const stats = ledger[game];
@@ -108,7 +111,7 @@ export function recordResult(game: GameKey, net: number | bigint): Ledger {
     [game]: {
       won: stats.won + (delta > 0n ? delta : 0n),
       lost: stats.lost + (delta < 0n ? -delta : 0n),
-      rounds: stats.rounds + 1,
+      rounds: stats.rounds + (countsAsRound ? 1 : 0),
     },
   };
   writeLedger(next);
