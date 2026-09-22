@@ -34,6 +34,7 @@ import {
   type ServiceNote,
   type ServiceStats,
 } from './blackjack-house.js';
+import { EMPTY_DEALER_SAVE, uniqueNames, type DealerSave } from './dealer-save.js';
 import { MAX_TABLE_PLAYERS } from './net/peer-link.js';
 import { cleanPlayerName } from './net/player-name.js';
 import type { HostedTable } from './net/shared-table.js';
@@ -45,10 +46,6 @@ export const BLACKJACK_TABLE_RULES: BlackjackRules = { ...STANDARD_BLACKJACK_RUL
 /** Créateur de la table ; les invités reçoivent « invite-1 », « invite-2 »…, les bots « bot-<place> ». */
 export const BLACKJACK_HOST: PlayerId = playerId('hote');
 
-const BOT_NAMES = [
-  'Léa', 'Hugo', 'Nora', 'Malik', 'Inès', 'Sacha', 'Yanis', 'Zoé',
-  'Jules', 'Maya', 'Noé', 'Lina', 'Adam', 'Rose', 'Ilyes', 'Chloé',
-] as const;
 /** Part des bots qui tentent les Paires parfaites quand la table les propose. */
 const BOT_SIDE_BET_PERCENT = 35;
 const BOT_DELAY_MS = 700;
@@ -86,6 +83,8 @@ export type BlackjackTableCommand =
   | { readonly type: 'HOUSE_RULES'; readonly rules: HouseRules }
   /** Créateur croupier : service noté terminé, on en commence un autre. */
   | { readonly type: 'NEW_SERVICE' }
+  /** Créateur croupier : renommer un bot assis ; le nouveau nom remplace l'ancien dans la liste des bots. */
+  | { readonly type: 'RENAME_BOT'; readonly target: string; readonly name: string }
   /** Mise « Paires parfaites » (0 pour la retirer), avant la donne, quand le croupier la propose. */
   | { readonly type: 'SIDE_BET'; readonly amount: number }
   /** Pourboire d'un joueur au croupier humain. */
@@ -126,6 +125,8 @@ export interface BlackjackDealerInfo {
   /** Dernier pourboire laissé par un vrai joueur : son numéro change à chaque nouveau pourboire. */
   readonly lastGuestTip: { readonly name: string; readonly amount: number; readonly serial: number } | null;
   readonly service: BlackjackService;
+  /** Tous les pourboires reçus depuis le premier service, conservés d'une visite à l'autre. */
+  readonly lifetimeTips: number;
 }
 
 export interface BlackjackSnapshot {
@@ -179,6 +180,8 @@ function parseCommand(raw: unknown): BlackjackTableCommand | null {
     }
     case 'NEW_SERVICE':
       return { type: 'NEW_SERVICE' };
+    case 'RENAME_BOT':
+      return typeof target === 'string' && typeof name === 'string' ? { type: 'RENAME_BOT', target, name } : null;
     case 'SIDE_BET':
       return typeof amount === 'number' ? { type: 'SIDE_BET', amount } : null;
     case 'TIP':
@@ -242,10 +245,24 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
   #roundGestures = { count: 0, ms: 0 };
   /** Pendant la donne du croupier : le règlement attend que les Paires parfaites soient payées. */
   #deferSettle = false;
+  #lifetimeTips: number;
+  #botNames: string[];
+  /** Service et cagnotte sauvegardés, repris quand le créateur reprend son poste de croupier. */
+  #resume: { readonly jar: number; readonly service: ServiceStats };
 
-  constructor(engine: BlackjackController, rng: RandomSource, hostName: string, hostBankroll: number) {
+  constructor(
+    engine: BlackjackController,
+    rng: RandomSource,
+    hostName: string,
+    hostBankroll: number,
+    saved: DealerSave = EMPTY_DEALER_SAVE,
+  ) {
     this.#engine = engine;
     this.#rng = rng;
+    this.#house = saved.house;
+    this.#lifetimeTips = saved.lifetimeTips;
+    this.#botNames = [...saved.botNames];
+    this.#resume = { jar: saved.jar, service: saved.service };
     this.#state = expectOk(engine.createTable(BLACKJACK_TABLE_RULES));
     this.#names.set(BLACKJACK_HOST, hostName);
     if (hostBankroll > 0) this.#sit(BLACKJACK_HOST, hostName, hostBankroll);
@@ -253,6 +270,15 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
 
   get state(): BlackjackState {
     return this.#state;
+  }
+
+  /**
+   * Poste du croupier à sauvegarder. Hors service, la cagnotte et le service repris restent en attente : ils ne sont
+   * perdus que si le créateur redevient joueur (la cagnotte rejoint alors son solde).
+   */
+  get dealerSave(): DealerSave {
+    const current = this.#dealerMode ? { jar: this.#jar, service: this.#note === null ? this.#service : EMPTY_SERVICE } : this.#resume;
+    return { house: this.#house, ...current, lifetimeTips: this.#lifetimeTips, botNames: this.#botNames };
   }
 
   get dealerMode(): boolean {
@@ -337,6 +363,7 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
             movement: this.#movement,
             lastGuestTip: this.#lastGuestTip,
             service: { length: this.#house.serviceLength, stats: this.#service, note: this.#note },
+            lifetimeTips: this.#lifetimeTips,
           }
         : null,
       credited: this.#credits.get(id) ?? 0,
@@ -401,6 +428,10 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       case 'NEW_SERVICE':
         if (host && this.#dealerMode) this.#newService();
         else this.#notices.set(id, 'Seul le croupier commence un service.');
+        return;
+      case 'RENAME_BOT':
+        if (host && this.#dealerMode) this.#renameBot(playerId(command.target), command.name);
+        else this.#notices.set(id, 'Seul le croupier renomme les bots.');
         return;
       case 'SIDE_BET':
         this.#placeSideBet(id, command.amount);
@@ -467,6 +498,7 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     const paid: BlackjackSeat = { ...seat, bankroll: chips(seat.bankroll - amount) };
     this.#state = { ...this.#state, seats: this.#state.seats.map((current) => (current?.seatIndex === seat.seatIndex ? paid : current)) };
     this.#jar += amount;
+    this.#lifetimeTips += amount;
     this.#tipsSinceSettle += amount;
     this.#roundTips = [...this.#roundTips, { seatIndex: seat.seatIndex, amount }];
     this.#service = { ...this.#service, tips: this.#service.tips + amount };
@@ -623,9 +655,13 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       return;
     }
     const previous = this.#houseInForce();
+    let jar = 0;
     if (enabled) {
       const seat = this.#seatOf(BLACKJACK_HOST);
-      this.#bank = seat === null ? 0 : seat.bankroll + sum(seat.pendingBets);
+      const balance = seat === null ? 0 : seat.bankroll + sum(seat.pendingBets);
+      // La cagnotte sauvegardée fait partie du solde : on l'en retire pour reprendre le service là où il s'était arrêté.
+      jar = Math.min(this.#resume.jar, balance);
+      this.#bank = balance - jar;
       if (seat !== null) this.#apply(null, { type: 'LEAVE_SEAT', playerId: BLACKJACK_HOST });
       this.#fillAll = true;
       this.#movedRound = this.#state.roundNumber;
@@ -637,11 +673,12 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
       if (balance > 0) this.#sit(BLACKJACK_HOST, this.#names.get(BLACKJACK_HOST) ?? cleanPlayerName(null), balance);
       this.#bank = 0;
     }
-    this.#jar = 0;
+    this.#jar = jar;
+    this.#service = enabled ? this.#resume.service : EMPTY_SERVICE;
+    this.#resume = { jar: 0, service: EMPTY_SERVICE };
     this.#lastRound = null;
     this.#roundTips = [];
     this.#movement = null;
-    this.#service = EMPTY_SERVICE;
     this.#note = null;
     this.#sideBets.clear();
     this.#sideResults = [];
@@ -715,6 +752,33 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
     if (seat === null) return;
     const renamed: BlackjackSeat = { ...seat, player: { ...seat.player, displayName: name } };
     this.#state = { ...this.#state, seats: this.#state.seats.map((current) => (current === seat ? renamed : current)) };
+  }
+
+  /** Un bot change de nom : à sa place tout de suite, et dans la liste des bots pour ses prochaines venues. */
+  #renameBot(target: PlayerId, raw: string): void {
+    const seat = this.#seatOf(target);
+    if (seat === null || !isBotPlayer(target)) {
+      this.#notices.set(BLACKJACK_HOST, 'Ce bot a quitté la table.');
+      return;
+    }
+    const name = cleanPlayerName(raw);
+    const old = seat.player.displayName;
+    const key = (value: string): string => value.toLocaleLowerCase('fr');
+    const taken = [
+      ...this.#state.seats.flatMap((other) => (other === null || other === seat ? [] : [other.player.displayName])),
+      ...[...this.#queue.values()].map((guest) => guest.name),
+      ...this.#botNames.filter((candidate) => key(candidate) !== key(old)),
+    ];
+    if (key(name) !== key(old) && taken.some((candidate) => key(candidate) === key(name))) {
+      this.#notices.set(BLACKJACK_HOST, `« ${name} » est déjà pris.`);
+      return;
+    }
+    const index = this.#botNames.findIndex((candidate) => key(candidate) === key(old));
+    const names = [...this.#botNames];
+    if (index === -1) names.push(name);
+    else names[index] = name;
+    this.#botNames = uniqueNames(names);
+    this.#rename(target, name);
   }
 
   #seatOf(id: PlayerId): BlackjackSeat | null {
@@ -859,7 +923,7 @@ export class BlackjackTable implements HostedTable<BlackjackSnapshot, BlackjackT
   /** Un nouveau bot s'assoit avec 50 à 150 fois le minimum de table. */
   #sitBot(seatIndex: number): string | null {
     const taken = new Set(this.#state.seats.map((seat) => seat?.player.displayName));
-    const free = BOT_NAMES.filter((candidate) => !taken.has(candidate));
+    const free = this.#botNames.filter((candidate) => !taken.has(candidate));
     const name = free[this.#rng.nextInt(Math.max(1, free.length))] ?? `Bot ${seatIndex + 1}`;
     const bankroll = this.#state.rules.minBet * (50 + this.#rng.nextInt(101));
     return this.#sit(playerId(`bot-${seatIndex}`), name, bankroll, seatIndex) ? name : null;
