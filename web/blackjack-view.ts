@@ -39,6 +39,7 @@ import {
 } from './blackjack-table.js';
 import { setCheatTarget, xrayEnabled } from './cheat-console.js';
 import { DAILY_REFILL, claimDailyRefill, loadLedger, netOf, recordResult, saveBalance, startingBalance } from './money-ledger.js';
+import { loadDealerSave, saveDealerSave } from './dealer-save.js';
 import { loadPlayerName, savePlayerName } from './net/player-name.js';
 import { joinSharedTable, localClient, shareTable, type ShareSession, type TableClient } from './net/shared-table.js';
 import { GUEST_CHEAT_LOCK, joinPanelHtml, shareBarHtml } from './net/table-ui.js';
@@ -204,7 +205,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   const rng = new CryptoRandomSource();
   const engine = new BlackjackController(rng);
   const animator = new DealAnimator();
-  const host = tableId === null ? new BlackjackTable(engine, rng, loadPlayerName(), startingBalance('blackjack')) : null;
+  const host = tableId === null ? new BlackjackTable(engine, rng, loadPlayerName(), startingBalance('blackjack'), loadDealerSave()) : null;
   let client: Client | null = host === null ? null : localClient(host, BLACKJACK_HOST);
   let share: ShareSession | null = null;
   let opening = false;
@@ -212,8 +213,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   let joinError: string | null = null;
   let unsubscribe: () => void = () => {};
   let selectedBox = 0;
-  /** Joueur à qui le créateur est en train de rendre des jetons (panneau ouvert). */
-  let grantTarget: string | null = null;
+  /** Panneau ouvert à la place des commandes : rendre des jetons à un invité, ou renommer un bot. */
+  let panel: { readonly kind: 'grant' | 'rename'; readonly target: string } | null = null;
   let credited: number | null = null;
   let tipped: number | null = null;
   let guestTipSerial: number | null = null;
@@ -480,8 +481,14 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
             ? `<button type="button" class="seat-credit" data-action="GRANT_OPEN" data-player="${escapeHtml(seat.player.id)}" ` +
               `aria-label="Rendre des jetons à ${escapeHtml(seat.player.displayName)}">+ Jetons</button>`
             : '';
+        // Le croupier renomme ses bots d'un clic sur le crayon.
+        const rename =
+          dealerOf(snapshot) !== null && isBotPlayer(seat.player.id)
+            ? `<button type="button" class="seat-rename" data-action="RENAME_OPEN" data-player="${escapeHtml(seat.player.id)}" ` +
+              `aria-label="Renommer ${escapeHtml(seat.player.displayName)}" title="Renommer">✎</button>`
+            : '';
         const head = shared
-          ? `<header class="bj-seat-head"><span class="bj-seat-name">${escapeHtml(seat.player.displayName)}${mine ? ' · vous' : ''}</span>${bot}` +
+          ? `<header class="bj-seat-head"><span class="bj-seat-name">${escapeHtml(seat.player.displayName)}${mine ? ' · vous' : ''}</span>${rename}${bot}` +
             `<span class="bj-seat-bank">${formatChips(seat.bankroll)}</span>${ready}${credit}</header>`
           : '';
         const body = view.phase === 'BETTING' ? renderBoxes(view, seat, mine) : renderHands(view, seat);
@@ -511,6 +518,19 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
           <input class="grant-input" type="number" inputmode="numeric" min="1" step="10" placeholder="Montant" aria-label="Jetons à rendre" data-grant-amount>
           <button class="btn primary" data-action="GRANT">Créditer</button>
           <button class="btn ghost" data-action="GRANT_CLOSE">Annuler</button>
+        </div>
+      </div>`;
+  }
+
+  /** Panneau du croupier pour renommer un bot ; comme celui des jetons, son HTML ne bouge pas pendant la saisie. */
+  function renamePanelHtml(name: string): string {
+    return `
+      <div class="grant-panel">
+        <p class="grant-title">Renommer le bot <strong>${escapeHtml(name)}</strong> <span>· il gardera ce nom à ses prochaines venues</span></p>
+        <div class="grant-row">
+          <input class="grant-input rename-input" type="text" maxlength="16" autocomplete="off" value="${escapeHtml(name)}" aria-label="Nouveau nom du bot" data-bot-name>
+          <button class="btn primary" data-action="RENAME_BOT">Renommer</button>
+          <button class="btn ghost" data-action="PANEL_CLOSE">Annuler</button>
         </div>
       </div>`;
   }
@@ -631,7 +651,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     const bar =
       `<p class="service-bar"><span>Service <strong>${service.stats.rounds}/${service.length}</strong> manches</span>` +
       `<span>Table <strong>${seated}/${view.rules.seatCount}</strong></span>` +
-      `<span>Pourboires <strong>${formatChips(dealer.tips)}</strong></span>` +
+      `<span>Pourboires <strong>${formatChips(dealer.tips)}</strong> · ${formatChips(dealer.lifetimeTips)} au total</span>` +
       `<span>Gain théorique <strong>${formatSigned(Math.round(service.stats.theo))}</strong></span></p>`;
     return bar + housePanelHtml(snapshot.house, view.phase === 'BETTING' || view.phase === 'ROUND_OVER');
   }
@@ -683,7 +703,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         <div class="grade grade-${note.grade.toLowerCase()}" aria-label="Note ${note.grade}">${note.grade}</div>
         <div class="summary-body">
           <h3>Service terminé · ${note.score}/100</h3>
-          <p>Banque ${formatSigned(stats.bankNet)} · ${formatChips(stats.tips)} jetons de pourboires versés à votre banque</p>
+          <p>Banque ${formatSigned(stats.bankNet)} · ${formatChips(stats.tips)} jetons de pourboires versés à votre banque · ${formatChips(dealer.lifetimeTips)} reçus depuis vos débuts</p>
           <ul class="summary-parts">${parts}</ul>
           <p class="summary-record">${recordLine}</p>
         </div>
@@ -815,16 +835,19 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     messageEl.dataset['tone'] = tone;
     shoeEl.textContent = `Sabot : ${view.shoe.cardsRemaining} cartes${view.shoe.reshufflePending ? ' · remélange à la prochaine manche' : ''}`;
     setHtml(seatsEl, renderSeats(snapshot, mySeat, shared));
-    const grantName = grantTarget === null ? null : (view.seats.find((seat) => seat?.player.id === grantTarget)?.player.displayName ?? null);
-    if (grantName === null) grantTarget = null;
-    setHtml(
-      controlsEl,
-      closed
-        ? '<a class="btn primary" href="#/blackjack">Jouer seul</a>'
-        : grantName !== null
-          ? grantPanelHtml(grantName)
-          : renderControls(snapshot, mySeat, shared),
-    );
+    const target = panel === null ? null : (view.seats.find((seat) => seat?.player.id === panel?.target)?.player.displayName ?? null);
+    if (panel !== null && target === null) {
+      // Le joueur visé est parti (un bot peut quitter la table entre deux manches) : le panneau se referme.
+      panel = null;
+      messageEl.textContent = 'Ce joueur a quitté la table.';
+      messageEl.dataset['tone'] = 'error';
+    }
+    let controls: string;
+    if (closed) controls = '<a class="btn primary" href="#/blackjack">Jouer seul</a>';
+    else if (panel !== null && target !== null) controls = panel.kind === 'grant' ? grantPanelHtml(target) : renamePanelHtml(target);
+    else controls = renderControls(snapshot, mySeat, shared);
+    setHtml(controlsEl, controls);
+    if (host !== null) saveDealerSave(host.dealerSave);
   }
 
   async function invite(): Promise<void> {
@@ -885,8 +908,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
 
   /** Envoie le montant saisi au joueur visé : le panneau se referme, ses jetons arrivent tout de suite. */
   function grant(): void {
-    const target = grantTarget;
-    if (target === null) return;
+    if (panel?.kind !== 'grant') return;
+    const { target } = panel;
     const input = controlsEl.querySelector<HTMLInputElement>('[data-grant-amount]');
     const amount = Math.trunc(Number(input?.value ?? ''));
     if (!Number.isSafeInteger(amount) || amount <= 0) {
@@ -895,9 +918,27 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
       return;
     }
     const name = last?.view.seats.find((seat) => seat?.player.id === target)?.player.displayName ?? 'ce joueur';
-    grantTarget = null;
+    panel = null;
     send({ type: 'GRANT', target, amount });
     localMessage = [`Vous rendez ${formatChips(amount)} jetons à ${name}.`, 'win'];
+    render();
+  }
+
+  /** Envoie le nouveau nom du bot visé ; un nom déjà pris revient en message d'erreur de la table. */
+  function renameBot(): void {
+    if (panel?.kind !== 'rename') return;
+    const { target } = panel;
+    const input = controlsEl.querySelector<HTMLInputElement>('[data-bot-name]');
+    const name = (input?.value ?? '').replace(/\s+/g, ' ').trim();
+    if (name === '') {
+      localMessage = ['Indiquez un nom pour le bot.', 'error'];
+      render();
+      return;
+    }
+    const old = last?.view.seats.find((seat) => seat?.player.id === target)?.player.displayName ?? 'Le bot';
+    panel = null;
+    send({ type: 'RENAME_BOT', target, name });
+    if (last?.notice === null) localMessage = [`${old} s'appelle maintenant ${last.view.seats.find((seat) => seat?.player.id === target)?.player.displayName ?? name}.`, 'win'];
     render();
   }
 
@@ -961,9 +1002,18 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         send({ type: 'TIP' });
         break;
       case 'GRANT_OPEN':
-        grantTarget = button.dataset['player'] ?? null;
+      case 'RENAME_OPEN': {
+        const target = button.dataset['player'];
+        panel = target === undefined ? null : { kind: action === 'GRANT_OPEN' ? 'grant' : 'rename', target };
         localMessage = null;
         render();
+        const input = controlsEl.querySelector<HTMLInputElement>('[data-bot-name]');
+        input?.focus();
+        input?.select();
+        break;
+      }
+      case 'RENAME_BOT':
+        renameBot();
         break;
       case 'GRANT_ADD': {
         // Le montant vit dans le champ, jamais dans un rendu : le cumul des raccourcis ne peut pas être effacé.
@@ -978,7 +1028,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         grant();
         break;
       case 'GRANT_CLOSE':
-        grantTarget = null;
+      case 'PANEL_CLOSE':
+        panel = null;
         render();
         break;
       case 'INVITE':
@@ -1019,9 +1070,10 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   }
 
   function onKey(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && event.target instanceof HTMLInputElement && event.target.matches('[data-grant-amount]')) {
+    if (event.key === 'Enter' && event.target instanceof HTMLInputElement && event.target.matches('[data-grant-amount], [data-bot-name]')) {
       event.preventDefault();
-      grant();
+      if (event.target.matches('[data-bot-name]')) renameBot();
+      else grant();
       return;
     }
     if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target instanceof HTMLInputElement) return;
@@ -1143,6 +1195,7 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
     unsubscribe();
     share?.close();
     client?.close();
+    if (host !== null) saveDealerSave(host.dealerSave);
     host?.dispose();
     setCheatTarget(null);
     root.removeEventListener('click', onClick);
