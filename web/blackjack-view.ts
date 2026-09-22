@@ -222,6 +222,8 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
   /** Dernière note de service vue, et le record battu (ou non) qu'elle a donné. */
   let gradedNote: ServiceNote | null = null;
   let previousRecord: ReturnType<typeof loadRecord> = null;
+  /** Dernière manche dont le résultat de la banque a été mis en avant : l'annonce ne rejaillit qu'une fois par manche. */
+  let bankBannerRound: number | null = null;
   let recordedRound: number | null = null;
   let recordedBankRound: number | null = null;
   let localMessage: [string, Tone] | null = null;
@@ -833,6 +835,15 @@ export function mountBlackjack(root: HTMLElement, tableId: string | null = null)
         : (localMessage ?? describe(snapshot, mySeat, shared));
     messageEl.textContent = text;
     messageEl.dataset['tone'] = tone;
+    // Résultat de la banque en fin de manche : un bandeau bien visible, qui surgit à chaque nouvelle manche réglée.
+    const bankResult = !closed && snapshot.notice === null && localMessage === null && dealerOf(snapshot) !== null && view.phase === 'ROUND_OVER';
+    messageEl.classList.toggle('bank-result', bankResult);
+    if (bankResult && bankBannerRound !== view.roundNumber) {
+      bankBannerRound = view.roundNumber;
+      messageEl.classList.remove('pop');
+      void messageEl.offsetWidth;
+      messageEl.classList.add('pop');
+    }
     shoeEl.textContent = `Sabot : ${view.shoe.cardsRemaining} cartes${view.shoe.reshufflePending ? ' · remélange à la prochaine manche' : ''}`;
     setHtml(seatsEl, renderSeats(snapshot, mySeat, shared));
     const target = panel === null ? null : (view.seats.find((seat) => seat?.player.id === panel?.target)?.player.displayName ?? null);
