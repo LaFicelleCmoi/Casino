@@ -14,7 +14,6 @@ if [ -e "$git_dir/MERGE_HEAD" ] || [ -d "$git_dir/rebase-merge" ] || [ -d "$git_
   exit 0
 fi
 
-trailer='Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>'
 remote="$(git config --get "branch.$branch.remote" || echo origin)"
 committed=0
 pushed=0
@@ -58,7 +57,7 @@ while IFS= read -r -d '' entry; do
   # Rien à commiter pour ce fichier (par exemple créé puis supprimé) : on passe.
   git diff --cached --quiet -- "${paths[@]}" && continue
 
-  if git commit -q -m "$message" -m "$trailer" -- "${paths[@]}" >/dev/null 2>&1; then
+  if git commit -q -m "$message" -- "${paths[@]}" >/dev/null 2>&1; then
     committed=$((committed + 1))
   else
     errors+=("$path")
