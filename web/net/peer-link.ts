@@ -12,6 +12,40 @@ const SILENCE_LIMIT_MS = 15_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 const TABLE_ID_PATTERN = /^[a-z0-9]{8,32}$/;
 
+/**
+ * Serveurs ICE pour traverser les box et pare-feu entre deux machines distinctes. Sur une même machine, les
+ * adresses locales suffisent ; entre deux réseaux, il faut au moins un STUN (adresse publique) et, derrière un NAT
+ * strict (4G, entreprise, certaines box), un relais TURN. Plusieurs relais gratuits, en UDP et en TCP/443, pour
+ * passer même quand l'UDP est filtré et qu'un des relais est hors service.
+ */
+const PEER_OPTIONS = {
+  debug: 0,
+  config: {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+      {
+        urls: [
+          'turn:eu-0.turn.peerjs.com:3478',
+          'turn:us-0.turn.peerjs.com:3478',
+          'turn:eu-0.turn.peerjs.com:3478?transport=tcp',
+        ],
+        username: 'peerjs',
+        credential: 'peerjsp',
+      },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443?transport=tcp',
+          'turns:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+    ],
+    sdpSemantics: 'unified-plan',
+  },
+};
+
 export const isTableId = (value: string): boolean => TABLE_ID_PATTERN.test(value);
 
 const peerIdFor = (game: SharedGame, tableId: string): string => `${PEER_PREFIX}${game}-${tableId}`;
@@ -118,7 +152,7 @@ export interface TableHost {
 /** Inscrit la table du créateur auprès du serveur de mise en relation PeerJS ; les invités s'y relient ensuite en direct. */
 export function openTableHost(game: SharedGame): Promise<TableHost> {
   const tableId = randomTableId();
-  const peer = new Peer(peerIdFor(game, tableId), { debug: 0 });
+  const peer = new Peer(peerIdFor(game, tableId), PEER_OPTIONS);
   const channels = new Set<Channel>();
   const listeners = new Set<(channel: Channel) => void>();
   const host: TableHost = {
@@ -160,7 +194,7 @@ export function openTableHost(game: SharedGame): Promise<TableHost> {
 /** Relie un invité à la table désignée par le lien. */
 export function connectToTable(game: SharedGame, tableId: string): Promise<Channel> {
   return new Promise((resolve, reject) => {
-    const peer = new Peer({ debug: 0 });
+    const peer = new Peer(PEER_OPTIONS);
     let settled = false;
     const fail = (message: string): void => {
       if (settled) return;
@@ -176,6 +210,12 @@ export function connectToTable(game: SharedGame, tableId: string): Promise<Chann
 
     peer.on('open', () => {
       const connection = peer.connect(peerIdFor(game, tableId), { reliable: true, serialization: 'json' });
+      // La table a été trouvée mais aucun chemin réseau n'aboutit : inutile d'attendre la fin du délai.
+      connection.on('iceStateChanged', (state) => {
+        if (state === 'failed') {
+          fail('Connexion directe impossible avec la table (réseau ou pare-feu trop restrictif). Réessayez.');
+        }
+      });
       connection.on('open', () => {
         if (settled) return;
         settled = true;
