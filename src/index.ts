@@ -8,3 +8,4 @@ export * as Plinko from './plinko/index.js';
 export * as Mines from './mines/index.js';
 export * as Hilo from './hilo/index.js';
 export * as Pachinko from './pachinko/index.js';
+export * as Coinflip from './coinflip/index.js';
