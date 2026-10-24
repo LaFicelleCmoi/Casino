@@ -1,6 +1,6 @@
 /** Soldes et bilan des jetons gagnés / perdus, conservés dans le navigateur d'une session à l'autre. */
 
-export type GameKey = 'blackjack' | 'holdem' | 'roulette' | 'grattage' | 'courses' | 'plinko' | 'mines' | 'hilo' | 'pachinko';
+export type GameKey = 'blackjack' | 'holdem' | 'roulette' | 'grattage' | 'courses' | 'plinko' | 'mines' | 'hilo' | 'pachinko' | 'pileface';
 
 /** Montants en bigint : la Roulette sans limite dépasse les entiers sûrs, et le bilan doit rester exact. */
 export interface GameStats {
@@ -18,7 +18,7 @@ export const DEFAULT_BALANCE = 1_000;
 
 const LEDGER_KEY = 'casino-engine:ledger:v1';
 const BALANCE_KEY = 'casino-engine:balance:v1';
-const GAMES: readonly GameKey[] = ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko'];
+const GAMES: readonly GameKey[] = ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko', 'pileface'];
 const EMPTY: GameStats = { won: 0n, lost: 0n, rounds: 0 };
 const SAFE_MAX = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -87,6 +87,7 @@ export function loadLedger(): Ledger {
     mines: parseStats(data['mines']),
     hilo: parseStats(data['hilo']),
     pachinko: parseStats(data['pachinko']),
+    pileface: parseStats(data['pileface']),
   };
 }
 
