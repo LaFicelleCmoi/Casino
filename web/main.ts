@@ -19,6 +19,7 @@ import { mountPlinko } from './plinko-view.js';
 import { mountMines } from './mines-view.js';
 import { mountHilo } from './hilo-view.js';
 import { mountPachinko } from './pachinko-view.js';
+import { mountPileFace } from './pileface-view.js';
 import { formatChips, formatSigned, signClass } from './ui.js';
 
 type Unmount = () => void;
@@ -57,6 +58,7 @@ function ledgerHtml(ledger: Ledger): string {
           ${ledgerRow('Mines', ledger.mines)}
           ${ledgerRow('Hi-Lo', ledger.hilo)}
           ${ledgerRow('Pachinko', ledger.pachinko)}
+          ${ledgerRow('Pile ou Face', ledger.pileface)}
           ${ledgerRow('Total', totalOf(ledger), true)}
         </tbody>
       </table>
@@ -141,6 +143,13 @@ function lobbyHtml(): string {
           ${balanceHtml(lobbyBalance('pachinko'))}
           <span class="tile-cta">Lancer</span>
         </a>
+        <a class="tile tile-pileface" href="#/pileface">
+          <span class="tile-suits" aria-hidden="true">♛ ①</span>
+          <h2>Pile ou Face</h2>
+          <p>Pariez sur Pile ou sur Face · gain ×1,98 · quitte ou double jusqu'à 10 lancers d'affilée</p>
+          ${balanceHtml(lobbyBalance('pileface'))}
+          <span class="tile-cta">Lancer</span>
+        </a>
       </div>
       <section class="ledger">${ledgerHtml(loadLedger())}</section>
       <footer class="lobby-footer">Jetons fictifs uniquement : aucun argent réel n'est en jeu.</footer>
@@ -151,7 +160,7 @@ function mountLobby(root: HTMLElement): Unmount {
   root.innerHTML = lobbyHtml();
 
   setCheatTarget({
-    games: ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko'],
+    games: ['blackjack', 'holdem', 'roulette', 'grattage', 'courses', 'plinko', 'mines', 'hilo', 'pachinko', 'pileface'],
     getBalance: lobbyBalance,
     setBalance: (game, amount) => {
       saveBalance(game, amount);
@@ -204,6 +213,9 @@ function route(): void {
       break;
     case 'pachinko':
       unmount = mountPachinko(app);
+      break;
+    case 'pileface':
+      unmount = mountPileFace(app);
       break;
     default:
       unmount = mountLobby(app);
